@@ -141,7 +141,10 @@ export const useRealtimeAgent = () => {
       console.log('ScriptProcessorNode created with buffer size:', BUFFER_SIZE)
 
       let audioPacketCount = 0
-      let userSpeakingDetected = false
+      let consecutiveSpeechFrames = 0
+      const SPEECH_THRESHOLD = 0.015 // RMS threshold for speech detection (adjust if needed)
+      const SUSTAINED_SPEECH_FRAMES = 3 // Require 3 consecutive frames (~500ms at 4096 buffer size)
+      let interruptionSent = false
 
       processor.onaudioprocess = (e) => {
         audioPacketCount++
@@ -154,18 +157,28 @@ export const useRealtimeAgent = () => {
           if (!isMuted) {
             const inputData = e.inputBuffer.getChannelData(0)
 
-            // Detect if user is speaking using simple volume threshold
+            // Detect if user is speaking using RMS volume threshold
             let sum = 0
             for (let i = 0; i < inputData.length; i++) {
               sum += inputData[i] * inputData[i]
             }
             const rms = Math.sqrt(sum / inputData.length)
-            const isSpeaking = rms > 0.01 // Threshold for detecting speech
+            const isSpeaking = rms > SPEECH_THRESHOLD
 
-            // If user starts speaking while agent is speaking, send interruption
-            if (isSpeaking && !userSpeakingDetected && isAgentSpeakingRef.current) {
-              console.log('User started speaking - interrupting agent')
-              userSpeakingDetected = true
+            // Track consecutive frames of speech
+            if (isSpeaking) {
+              consecutiveSpeechFrames++
+            } else {
+              consecutiveSpeechFrames = 0
+              interruptionSent = false // Reset when user stops speaking
+            }
+
+            // Only interrupt if we detect sustained speech (not just noise)
+            if (consecutiveSpeechFrames >= SUSTAINED_SPEECH_FRAMES &&
+                !interruptionSent &&
+                isAgentSpeakingRef.current) {
+              console.log('Sustained user speech detected - interrupting agent')
+              interruptionSent = true
 
               // Send cancel message to server
               wsRef.current.send(JSON.stringify({
@@ -174,9 +187,6 @@ export const useRealtimeAgent = () => {
 
               // Stop local audio playback immediately
               stopAudioPlayback()
-            } else if (!isSpeaking && userSpeakingDetected) {
-              // Reset detection flag when user stops speaking
-              userSpeakingDetected = false
             }
 
             const int16Data = floatTo16BitPCM(inputData)
