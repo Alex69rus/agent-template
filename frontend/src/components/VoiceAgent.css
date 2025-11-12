@@ -1,0 +1,278 @@
+.voice-agent-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* Status Bar */
+.status-bar {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  padding: 1rem 1.5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.status-icon {
+  font-size: 1.2rem;
+}
+
+.error-message {
+  margin-top: 0.5rem;
+  color: #f44336;
+  font-size: 0.9rem;
+}
+
+/* Control Panel */
+.control-panel {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+.control-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 0.875rem 2rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 150px;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-connect {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.btn-disconnect {
+  background: linear-gradient(135deg, #f44336 0%, #e91e63 100%);
+  color: white;
+}
+
+.btn-mute {
+  background: linear-gradient(135deg, #4caf50 0%, #8bc34a 100%);
+  color: white;
+}
+
+.btn-mute.muted {
+  background: linear-gradient(135deg, #ff9800 0%, #ff5722 100%);
+}
+
+/* Audio Visualizer */
+.audio-visualizer {
+  margin-top: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.pulse {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pulse::before {
+  content: '🎤';
+  font-size: 2rem;
+  position: relative;
+  z-index: 2;
+}
+
+.pulse.muted::before {
+  content: '🔇';
+}
+
+.pulse-ring {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border: 3px solid #667eea;
+  border-radius: 50%;
+  animation: pulse-animation 2s ease-out infinite;
+  opacity: 0;
+}
+
+.pulse.muted .pulse-ring {
+  border-color: #ff9800;
+}
+
+.pulse-ring:nth-child(2) {
+  animation-delay: 0.5s;
+}
+
+.pulse-ring:nth-child(3) {
+  animation-delay: 1s;
+}
+
+@keyframes pulse-animation {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+.visualizer-text {
+  color: #666;
+  font-weight: 500;
+  font-size: 1rem;
+}
+
+/* Transcript Section */
+.transcript-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.section-title {
+  color: white;
+  font-size: 1.5rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* Info Panel */
+.info-panel {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+.info-panel h3 {
+  color: #333;
+  font-size: 1.2rem;
+  margin-bottom: 0.75rem;
+}
+
+.info-panel p {
+  color: #555;
+  line-height: 1.6;
+  margin-bottom: 0.75rem;
+}
+
+.info-panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0;
+}
+
+.info-panel li {
+  color: #555;
+  padding: 0.5rem 0;
+  line-height: 1.5;
+}
+
+.disclaimer {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: #fff3cd;
+  border-left: 4px solid #ffc107;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  color: #856404;
+}
+
+.disclaimer strong {
+  font-weight: 600;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .voice-agent-container {
+    gap: 1rem;
+  }
+
+  .control-panel {
+    padding: 1.5rem;
+  }
+
+  .btn {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    min-width: 130px;
+  }
+
+  .control-buttons {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pulse {
+    width: 60px;
+    height: 60px;
+  }
+
+  .pulse::before {
+    font-size: 1.5rem;
+  }
+
+  .pulse-ring {
+    width: 60px;
+    height: 60px;
+  }
+
+  .section-title {
+    font-size: 1.3rem;
+  }
+
+  .info-panel {
+    padding: 1rem;
+  }
+
+  .info-panel h3 {
+    font-size: 1.1rem;
+  }
+
+  .info-panel p,
+  .info-panel li {
+    font-size: 0.95rem;
+  }
+}
