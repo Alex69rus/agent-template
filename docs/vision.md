@@ -50,6 +50,17 @@ This document captures the complete journey, challenges, and solutions for build
 - **Result**: Immediate, complete audio stop when user interrupts
 - **Files**: [useRealtimeAgent.js:66-85](../frontend/src/hooks/useRealtimeAgent.js#L66-L85)
 
+**5. Transcript Display Fixed**
+- **Problem**: Transcripts not appearing on frontend during conversation
+- **Root Cause**: Backend was listening for non-existent event types (`transcript`, `agent_audio_transcript`) instead of SDK's actual events (`transcript_delta`, `input_audio_transcription_completed`) wrapped in `raw_model_event`
+- **Solution**:
+  - Handle `raw_model_event` type and extract wrapped model events
+  - Convert `transcript_delta` → `response.audio_transcript.delta` for agent speech
+  - Convert `input_audio_transcription_completed` → `conversation.item.input_audio_transcription.completed` for user speech
+  - Emit `response.audio_transcript.done` when `audio_end` occurs to complete agent transcripts
+- **Result**: Real-time transcription display for both user and agent speech with proper completion signals
+- **Files**: [main.py:191-210](../backend/main.py#L191-L210), [main.py:177-184](../backend/main.py#L177-L184)
+
 **Key Technical Changes:**
 ```javascript
 // Before: Sequential playback (caused gaps)
@@ -74,6 +85,36 @@ event.tool_name  # ❌ AttributeError
 
 # After: Extract from tool object
 getattr(event.tool, 'name', str(event.tool))  # ✅ Works
+```
+
+```python
+# Before: Listening for wrong event types
+elif event_type == "transcript":  # ❌ Doesn't exist
+    event_data = {"type": "...", "transcript": event.text}
+elif event_type == "agent_audio_transcript":  # ❌ Doesn't exist
+    event_data = {"type": "...", "delta": event.text}
+
+# After: Handle raw_model_event wrapper
+elif event_type == "raw_model_event":  # ✅ Correct
+    model_event = event.data
+    if model_event.type == "transcript_delta":
+        # Agent speech streaming
+        event_data = {
+            "type": "response.audio_transcript.delta",
+            "delta": model_event.delta
+        }
+    elif model_event.type == "input_audio_transcription_completed":
+        # User speech completed
+        event_data = {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": model_event.transcript
+        }
+
+# And emit completion signal
+elif event_type == "audio_end":
+    # Send both audio done AND transcript done
+    await websocket.send_text(json.dumps({"type": "response.audio.done"}))
+    event_data = {"type": "response.audio_transcript.done"}  # ✅ Completes transcript
 ```
 
 ---
@@ -805,7 +846,67 @@ if event_type == "tool_start":
     output = event.output  # For tool_end events
 ```
 
-### Issue 8: False Interruptions from Background Noise
+### Issue 8: Transcripts Not Appearing on Frontend
+
+**Symptoms:** "📝 Transcript will appear here..." message stays empty during conversation, no transcripts display
+
+**Cause:** Backend listening for wrong event types that don't exist in the SDK
+
+**WRONG:**
+```python
+# These event types don't exist in the SDK
+elif event_type == "transcript":
+    event_data = {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": event.text  # ❌ event.text doesn't exist
+    }
+
+elif event_type == "agent_audio_transcript":
+    event_data = {
+        "type": "response.audio_transcript.delta",
+        "delta": event.text  # ❌ event.text doesn't exist
+    }
+```
+
+**CORRECT:**
+```python
+# SDK wraps transcript events in raw_model_event
+elif event_type == "raw_model_event":
+    model_event = event.data
+    model_event_type = model_event.type if hasattr(model_event, 'type') else None
+
+    if model_event_type == "transcript_delta":
+        # Agent speech transcript delta (streaming)
+        event_data = {
+            "type": "response.audio_transcript.delta",
+            "delta": model_event.delta  # ✅ Correct attribute
+        }
+    elif model_event_type == "input_audio_transcription_completed":
+        # User speech transcription (completed)
+        event_data = {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": model_event.transcript  # ✅ Correct attribute
+        }
+
+# CRITICAL: Also emit completion signal
+elif event_type == "audio_end":
+    # Send BOTH audio done and transcript done
+    await websocket.send_text(json.dumps({
+        "type": "response.audio.done"
+    }))
+    event_data = {
+        "type": "response.audio_transcript.done"  # ✅ Marks transcript complete
+    }
+```
+
+**Key Points:**
+- The SDK emits `transcript_delta` events wrapped in `raw_model_event`
+- Must extract `event.data` to get the actual model event
+- Agent transcripts need BOTH streaming deltas AND a completion signal
+- Without the completion signal, frontend keeps showing typing indicator ("...")
+- User transcripts come as single `input_audio_transcription_completed` events
+
+### Issue 9: False Interruptions from Background Noise
 
 **Symptoms:** Agent gets interrupted by coughs, keyboard clicks, background sounds
 
@@ -1131,11 +1232,20 @@ finally:
 - **Cleanup everywhere** - Clear queues, stop sources, reset scheduled time
 - **Natural feel** - Brief noises don't interrupt, but real speech does
 
-### 5. User Experience
+### 5. Transcription Handling
+
+- **Handle raw_model_event** - Transcript events are wrapped in `raw_model_event`
+- **Extract model events** - Access `event.data` to get `transcript_delta` or `input_audio_transcription_completed`
+- **Stream agent transcripts** - Send `response.audio_transcript.delta` for each chunk
+- **Complete agent transcripts** - Send `response.audio_transcript.done` when audio ends
+- **User transcripts** - Convert `input_audio_transcription_completed` to frontend format
+- **Both required** - Frontend needs both streaming deltas AND completion signal
+
+### 6. User Experience
 
 - **Latency matters** - Optimize audio pipeline
 - **Visual feedback** - Show connection status, listening state
-- **Transcript display** - Let users see conversation
+- **Transcript display** - Let users see conversation in real-time
 - **Error messages** - Clear, actionable feedback
 - **Interruption feels natural** - Critical for voice UX
 
@@ -1157,6 +1267,14 @@ finally:
 - [ ] Agent stops generating
 - [ ] Conversation continues smoothly
 - [ ] No audio artifacts
+
+### Transcription
+- [ ] User speech appears in transcript
+- [ ] Agent speech appears in transcript
+- [ ] Transcripts stream in real-time
+- [ ] Agent transcripts complete (no endless "...")
+- [ ] Transcript auto-scrolls to latest
+- [ ] Transcripts cleared on new connection
 
 ### Tools
 - [ ] Tools called correctly

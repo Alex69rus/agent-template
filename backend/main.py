@@ -175,8 +175,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                 event_data = None
 
                         elif event_type == "audio_end":
-                            event_data = {
+                            # Send both audio done and transcript done
+                            await websocket.send_text(json.dumps({
                                 "type": "response.audio.done"
+                            }))
+                            event_data = {
+                                "type": "response.audio_transcript.done"
                             }
 
                         elif event_type == "audio_interrupted":
@@ -184,19 +188,26 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "type": "response.audio.interrupted"
                             }
 
-                        elif event_type == "transcript":
-                            # Transcription event
-                            event_data = {
-                                "type": "conversation.item.input_audio_transcription.completed",
-                                "transcript": event.text
-                            }
+                        elif event_type == "raw_model_event":
+                            # Handle raw model events for transcripts
+                            model_event = event.data
+                            model_event_type = model_event.type if hasattr(model_event, 'type') else None
 
-                        elif event_type == "agent_audio_transcript":
-                            # Agent speech transcript
-                            event_data = {
-                                "type": "response.audio_transcript.delta",
-                                "delta": event.text
-                            }
+                            if model_event_type == "transcript_delta":
+                                # Agent speech transcript delta
+                                event_data = {
+                                    "type": "response.audio_transcript.delta",
+                                    "delta": model_event.delta
+                                }
+                            elif model_event_type == "input_audio_transcription_completed":
+                                # User speech transcription completed
+                                event_data = {
+                                    "type": "conversation.item.input_audio_transcription.completed",
+                                    "transcript": model_event.transcript
+                                }
+                            else:
+                                # Skip other raw model events
+                                event_data = None
 
                         elif event_type == "tool_start":
                             # Get tool name from the tool object
