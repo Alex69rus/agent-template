@@ -8,16 +8,73 @@ This document captures the complete journey, challenges, and solutions for build
 
 ## Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
-2. [Technology Stack](#technology-stack)
-3. [Backend Implementation](#backend-implementation)
-4. [Frontend Implementation](#frontend-implementation)
-5. [Common Issues & Solutions](#common-issues--solutions)
-6. [Audio Pipeline](#audio-pipeline)
-7. [Interruption Handling](#interruption-handling)
-8. [Tools Integration](#tools-integration)
-9. [Production Considerations](#production-considerations)
-10. [Key Learnings](#key-learnings)
+1. [Recent Improvements](#recent-improvements)
+2. [Architecture Overview](#architecture-overview)
+3. [Technology Stack](#technology-stack)
+4. [Backend Implementation](#backend-implementation)
+5. [Frontend Implementation](#frontend-implementation)
+6. [Common Issues & Solutions](#common-issues--solutions)
+7. [Audio Pipeline](#audio-pipeline)
+8. [Interruption Handling](#interruption-handling)
+9. [Tools Integration](#tools-integration)
+10. [Production Considerations](#production-considerations)
+11. [Key Learnings](#key-learnings)
+
+---
+
+## Recent Improvements
+
+### Critical Fixes for Production-Ready Voice Agent
+
+**1. Smooth Audio Playback (Eliminates Stuttering)**
+- **Problem**: Sequential playback with `await` caused micro-interruptions between audio chunks
+- **Solution**: Scheduled playback using `source.start(scheduledTime)` for gap-free audio
+- **Result**: Smooth, continuous agent speech without stuttering
+- **Files**: [useRealtimeAgent.js:88-153](../frontend/src/hooks/useRealtimeAgent.js#L88-L153)
+
+**2. Noise-Resistant Interruption Detection**
+- **Problem**: Single-frame speech detection triggered false interruptions from coughs, clicks, background noise
+- **Solution**: Require 3 consecutive frames (~500ms) of sustained speech before interrupting
+- **Result**: Natural interruptions work, but brief noises don't cause false positives
+- **Files**: [useRealtimeAgent.js:118-164](../frontend/src/hooks/useRealtimeAgent.js#L118-L164)
+
+**3. Fixed Tool Event Handling**
+- **Problem**: `AttributeError: 'RealtimeToolStart' object has no attribute 'tool_name'`
+- **Solution**: Extract tool name from `event.tool` object using `getattr()`
+- **Result**: Tools execute without crashes
+- **Files**: [main.py:200-212](../backend/main.py#L200-L212)
+
+**4. Proper Interruption Cleanup**
+- **Problem**: Audio continued playing locally even after interruption signal sent
+- **Solution**: Track array of active audio sources and stop all on interruption
+- **Result**: Immediate, complete audio stop when user interrupts
+- **Files**: [useRealtimeAgent.js:66-85](../frontend/src/hooks/useRealtimeAgent.js#L66-L85)
+
+**Key Technical Changes:**
+```javascript
+// Before: Sequential playback (caused gaps)
+await new Promise(resolve => source.onended = resolve)
+
+// After: Scheduled playback (no gaps)
+source.start(scheduledTime)
+scheduledTime += audioBuffer.duration
+```
+
+```javascript
+// Before: Single-frame detection (false positives)
+if (rms > threshold && agentSpeaking) interrupt()
+
+// After: Sustained speech detection (noise resistant)
+if (consecutiveFrames >= 3 && agentSpeaking) interrupt()
+```
+
+```python
+# Before: Wrong attributes
+event.tool_name  # ❌ AttributeError
+
+# After: Extract from tool object
+getattr(event.tool, 'name', str(event.tool))  # ✅ Works
+```
 
 ---
 
@@ -404,15 +461,37 @@ function base64ToInt16Array(base64) {
 }
 ```
 
-### 5. Audio Playback
+### 5. Audio Playback (Scheduled for Smooth Playback)
+
+**Critical: Use scheduled playback to eliminate micro-interruptions**
 
 ```javascript
+// WRONG: Sequential playback causes gaps
 async function playAudioFromQueue() {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return
+    while (audioQueueRef.current.length > 0) {
+        const chunk = audioQueueRef.current.shift()
+        // ...create buffer
+        await new Promise(resolve => {
+            source.onended = resolve
+            source.start()  // ❌ Waits for previous chunk, causes gaps
+        })
+    }
+}
 
-    isPlayingRef.current = true
+// CORRECT: Scheduled playback for smooth continuous audio
+function playAudioFromQueue() {
+    if (audioQueueRef.current.length === 0) return
+
+    const audioContext = audioContextRef.current
     isAgentSpeakingRef.current = true
 
+    // Initialize scheduled time if not playing
+    if (!isPlayingRef.current || scheduledTimeRef.current < audioContext.currentTime) {
+        scheduledTimeRef.current = audioContext.currentTime + 0.05 // 50ms buffer
+        isPlayingRef.current = true
+    }
+
+    // Schedule all queued audio chunks
     while (audioQueueRef.current.length > 0) {
         const int16Array = audioQueueRef.current.shift()
         const float32Array = int16ToFloat32(int16Array)
@@ -424,23 +503,54 @@ async function playAudioFromQueue() {
         source.buffer = audioBuffer
         source.connect(audioContext.destination)
 
-        currentAudioSourceRef.current = source
+        // Track active sources for interruption
+        currentAudioSourceRef.current.push(source)
 
-        await new Promise((resolve) => {
-            source.onended = resolve
-            source.start()
-        })
+        // Schedule this chunk to play immediately after the previous one
+        source.start(scheduledTimeRef.current)  // ✅ Precise scheduling, no gaps!
+
+        // Calculate when this chunk will finish
+        const chunkDuration = audioBuffer.duration
+        scheduledTimeRef.current += chunkDuration
+
+        // Clean up source reference when it ends
+        source.onended = () => {
+            const index = currentAudioSourceRef.current.indexOf(source)
+            if (index > -1) {
+                currentAudioSourceRef.current.splice(index, 1)
+            }
+
+            // Check if playback is complete
+            if (currentAudioSourceRef.current.length === 0 &&
+                audioQueueRef.current.length === 0) {
+                isPlayingRef.current = false
+                isAgentSpeakingRef.current = false
+                scheduledTimeRef.current = 0
+            }
+        }
     }
-
-    isPlayingRef.current = false
-    isAgentSpeakingRef.current = false
 }
 ```
 
-### 6. Interruption Detection
+**Key Differences:**
+- **Scheduled timing**: Uses `source.start(scheduledTime)` instead of `source.start()`
+- **No await**: Doesn't wait for chunks to finish - schedules them all immediately
+- **Precise scheduling**: Web Audio API handles exact timing, no JavaScript delays
+- **Multiple sources**: Tracks array of active sources for proper interruption
+- **Result**: Smooth, continuous audio without gaps or stuttering
+
+### 6. Interruption Detection (Noise-Resistant)
+
+**Critical: Require sustained speech to avoid false interruptions from noise**
 
 ```javascript
-// Detect when user speaks while agent is talking
+// Configuration
+const SPEECH_THRESHOLD = 0.015  // RMS threshold (adjust based on environment)
+const SUSTAINED_SPEECH_FRAMES = 3  // Require 3 consecutive frames (~500ms)
+
+let consecutiveSpeechFrames = 0
+let interruptionSent = false
+
 processor.onaudioprocess = (e) => {
     const inputData = e.inputBuffer.getChannelData(0)
 
@@ -450,41 +560,72 @@ processor.onaudioprocess = (e) => {
         sum += inputData[i] * inputData[i]
     }
     const rms = Math.sqrt(sum / inputData.length)
+    const isSpeaking = rms > SPEECH_THRESHOLD
 
-    // User is speaking (above threshold)
-    if (rms > 0.01) {
-        if (isAgentSpeakingRef.current && !userSpeakingRef.current) {
-            userSpeakingRef.current = true
-
-            // Send interruption signal
-            wsRef.current.send(JSON.stringify({
-                type: 'response.cancel'
-            }))
-
-            // Immediately stop local playback
-            stopAudioPlayback()
-        }
+    // Track consecutive frames of speech
+    if (isSpeaking) {
+        consecutiveSpeechFrames++
     } else {
-        userSpeakingRef.current = false
+        consecutiveSpeechFrames = 0
+        interruptionSent = false  // Reset when user stops speaking
+    }
+
+    // Only interrupt if we detect sustained speech (not just noise)
+    if (consecutiveSpeechFrames >= SUSTAINED_SPEECH_FRAMES &&
+        !interruptionSent &&
+        isAgentSpeakingRef.current) {
+
+        console.log('Sustained user speech detected - interrupting agent')
+        interruptionSent = true
+
+        // Send interruption signal to backend
+        wsRef.current.send(JSON.stringify({
+            type: 'response.cancel'
+        }))
+
+        // Immediately stop local playback
+        stopAudioPlayback()
     }
 
     // Continue processing audio...
 }
 
 function stopAudioPlayback() {
-    // Stop current audio immediately
-    if (currentAudioSourceRef.current) {
-        try {
-            currentAudioSourceRef.current.stop()
-        } catch (e) {}
-        currentAudioSourceRef.current = null
+    // Stop all playing audio sources
+    if (currentAudioSourceRef.current && currentAudioSourceRef.current.length > 0) {
+        currentAudioSourceRef.current.forEach(source => {
+            try {
+                source.stop()
+                source.disconnect()
+            } catch (e) {
+                // Ignore errors if already stopped
+            }
+        })
     }
+    currentAudioSourceRef.current = []
 
     // Clear queue
     audioQueueRef.current = []
     isPlayingRef.current = false
     isAgentSpeakingRef.current = false
+    scheduledTimeRef.current = 0
 }
+```
+
+**Why Sustained Speech Detection?**
+- **Problem**: Single-frame detection triggers on coughs, clicks, background noise
+- **Solution**: Require 3 consecutive frames (≈500ms) of speech
+- **Result**: Natural interruptions work, but noise doesn't trigger false positives
+
+**Tuning Parameters:**
+```javascript
+// More sensitive (interrupts faster, more false positives)
+const SPEECH_THRESHOLD = 0.01
+const SUSTAINED_SPEECH_FRAMES = 2
+
+// Less sensitive (fewer false positives, slower interruption)
+const SPEECH_THRESHOLD = 0.02
+const SUSTAINED_SPEECH_FRAMES = 4
 ```
 
 ---
@@ -580,6 +721,7 @@ processor.onaudioprocess = (e) => {
 1. AudioContext suspended
 2. Audio queue not being processed
 3. Format conversion error
+4. currentAudioSourceRef not initialized as array
 
 **Solution:**
 ```javascript
@@ -593,6 +735,104 @@ function handleAudioDelta(data) {
     const int16Array = base64ToInt16Array(data.delta)
     audioQueueRef.current.push(int16Array)
     playAudioFromQueue()  // ✅ Must trigger this
+}
+
+// Initialize refs correctly for scheduled playback
+const currentAudioSourceRef = useRef([])  // ✅ Array, not null
+const scheduledTimeRef = useRef(0)
+```
+
+### Issue 6: Audio Has Micro-Interruptions / Stuttering
+
+**Symptoms:** Audio plays but has brief gaps/stuttering between chunks
+
+**Cause:** Sequential playback with `await` causes JavaScript execution delays between chunks
+
+**WRONG:**
+```javascript
+// ❌ Sequential playback - causes gaps
+while (queue.length > 0) {
+    const chunk = queue.shift()
+    await new Promise(resolve => {
+        source.onended = resolve
+        source.start()  // Waits for previous chunk
+    })
+}
+```
+
+**CORRECT:**
+```javascript
+// ✅ Scheduled playback - no gaps
+let scheduledTime = audioContext.currentTime + 0.05
+
+while (queue.length > 0) {
+    const chunk = queue.shift()
+    const source = createAudioSource(chunk)
+
+    source.start(scheduledTime)  // Schedule precisely
+    scheduledTime += source.buffer.duration  // Track timing
+}
+```
+
+**Key Points:**
+- Use `source.start(time)` with scheduled time, not `source.start()`
+- Don't `await` between chunks - schedule them all immediately
+- Web Audio API handles precise timing internally
+- Track array of active sources for proper interruption
+
+### Issue 7: Tool Events Causing AttributeError
+
+**Error:**
+```
+AttributeError: 'RealtimeToolStart' object has no attribute 'tool_name'
+```
+
+**Cause:** SDK event structure doesn't have `tool_name` or `tool_call_id` attributes
+
+**WRONG:**
+```python
+if event_type == "tool_start":
+    name = event.tool_name  # ❌ Doesn't exist
+    call_id = event.tool_call_id  # ❌ Doesn't exist
+```
+
+**CORRECT:**
+```python
+if event_type == "tool_start":
+    # Extract name from tool object
+    tool_name = getattr(event.tool, 'name', str(event.tool))
+    arguments = event.arguments  # JSON string
+    output = event.output  # For tool_end events
+```
+
+### Issue 8: False Interruptions from Background Noise
+
+**Symptoms:** Agent gets interrupted by coughs, keyboard clicks, background sounds
+
+**Cause:** Single-frame speech detection is too sensitive
+
+**WRONG:**
+```javascript
+const isSpeaking = rms > 0.01
+if (isSpeaking && isAgentSpeaking) {
+    interrupt()  // ❌ Triggers on single noise spike
+}
+```
+
+**CORRECT:**
+```javascript
+// Require sustained speech
+let consecutiveFrames = 0
+
+if (isSpeaking) {
+    consecutiveFrames++
+} else {
+    consecutiveFrames = 0
+}
+
+// Only interrupt after 3 consecutive frames (~500ms)
+if (consecutiveFrames >= 3 && isAgentSpeaking) {
+    interrupt()  // ✅ Filters out brief noise
 }
 ```
 
@@ -866,9 +1106,12 @@ finally:
 
 ### 2. Audio Processing
 
-- **Buffer size must be power of 2** - Critical for Web Audio API
+- **Buffer size must be power of 2** - Critical for Web Audio API (4096 recommended)
 - **PCM16 is the format** - Convert Float32 ↔ PCM16 ↔ Base64
 - **24kHz sample rate** - Standard for OpenAI Realtime API
+- **Scheduled playback** - Use `source.start(time)` for gap-free audio
+- **No await between chunks** - Schedule all immediately for smooth playback
+- **Track active sources** - Array of sources for proper interruption
 - **Monitor audio pipeline** - Debug at each conversion step
 
 ### 3. WebSocket Communication
@@ -880,11 +1123,13 @@ finally:
 
 ### 4. Interruption Handling
 
-- **Detect on frontend** - RMS volume threshold
-- **Stop immediately** - Local playback first
+- **Sustained speech detection** - Require 3 consecutive frames (~500ms) to filter noise
+- **Adjustable threshold** - RMS 0.015 balances sensitivity vs false positives
+- **Stop immediately** - Local playback first (stop all active sources)
 - **Notify backend** - `response.cancel` message
 - **Backend interrupts** - `session.interrupt()`
-- **Cleanup everywhere** - Clear queues, stop sources
+- **Cleanup everywhere** - Clear queues, stop sources, reset scheduled time
+- **Natural feel** - Brief noises don't interrupt, but real speech does
 
 ### 5. User Experience
 

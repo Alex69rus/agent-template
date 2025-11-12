@@ -18,7 +18,8 @@ export const useRealtimeAgent = () => {
   const audioQueueRef = useRef([])
   const isPlayingRef = useRef(false)
   const isAgentSpeakingRef = useRef(false)
-  const currentAudioSourceRef = useRef(null)
+  const currentAudioSourceRef = useRef([])
+  const scheduledTimeRef = useRef(0)
 
   // Initialize audio context
   const initAudioContext = useCallback(async () => {
@@ -66,32 +67,50 @@ export const useRealtimeAgent = () => {
 
   // Stop current audio playback
   const stopAudioPlayback = useCallback(() => {
-    // Stop current playing audio source
-    if (currentAudioSourceRef.current) {
-      try {
-        currentAudioSourceRef.current.stop()
-        currentAudioSourceRef.current.disconnect()
-      } catch (e) {
-        // Ignore errors if already stopped
-      }
-      currentAudioSourceRef.current = null
+    // Stop all playing audio sources
+    if (currentAudioSourceRef.current && currentAudioSourceRef.current.length > 0) {
+      currentAudioSourceRef.current.forEach(source => {
+        try {
+          source.stop()
+          source.disconnect()
+        } catch (e) {
+          // Ignore errors if already stopped
+        }
+      })
     }
+    currentAudioSourceRef.current = []
 
     // Clear the audio queue
     audioQueueRef.current = []
     isPlayingRef.current = false
     isAgentSpeakingRef.current = false
+    scheduledTimeRef.current = 0
   }, [])
 
-  // Play audio from queue
-  const playAudioFromQueue = useCallback(async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) {
+  // Play audio from queue with scheduled playback for smooth continuous audio
+  const playAudioFromQueue = useCallback(() => {
+    if (audioQueueRef.current.length === 0) {
       return
     }
 
-    isPlayingRef.current = true
-    isAgentSpeakingRef.current = true
     const audioContext = audioContextRef.current
+    if (!audioContext) {
+      console.error('Audio context not initialized')
+      return
+    }
+
+    isAgentSpeakingRef.current = true
+
+    // Initialize scheduled time if not playing
+    if (!isPlayingRef.current || scheduledTimeRef.current < audioContext.currentTime) {
+      scheduledTimeRef.current = audioContext.currentTime + 0.05 // Small buffer to prevent glitches
+      isPlayingRef.current = true
+      console.log('Starting audio playback, scheduled time:', scheduledTimeRef.current)
+    }
+
+    // Schedule all queued audio chunks
+    const chunksToPlay = audioQueueRef.current.length
+    console.log(`Scheduling ${chunksToPlay} audio chunks`)
 
     while (audioQueueRef.current.length > 0) {
       const int16Array = audioQueueRef.current.shift()
@@ -103,18 +122,37 @@ export const useRealtimeAgent = () => {
       const source = audioContext.createBufferSource()
       source.buffer = audioBuffer
       source.connect(audioContext.destination)
-      currentAudioSourceRef.current = source
 
-      await new Promise((resolve) => {
-        source.onended = resolve
-        source.start()
-      })
+      // Track active sources for interruption
+      currentAudioSourceRef.current.push(source)
 
-      currentAudioSourceRef.current = null
+      // Schedule this chunk to play immediately after the previous one
+      source.start(scheduledTimeRef.current)
+
+      // Calculate when this chunk will finish
+      const chunkDuration = audioBuffer.duration
+      scheduledTimeRef.current += chunkDuration
+
+      // Clean up source reference when it ends
+      source.onended = () => {
+        if (currentAudioSourceRef.current) {
+          const index = currentAudioSourceRef.current.indexOf(source)
+          if (index > -1) {
+            currentAudioSourceRef.current.splice(index, 1)
+          }
+        }
+
+        // Check if playback is complete
+        if (currentAudioSourceRef.current?.length === 0 &&
+            audioQueueRef.current.length === 0 &&
+            scheduledTimeRef.current <= audioContext.currentTime + 0.1) {
+          isPlayingRef.current = false
+          isAgentSpeakingRef.current = false
+          scheduledTimeRef.current = 0
+          console.log('Audio playback complete')
+        }
+      }
     }
-
-    isPlayingRef.current = false
-    isAgentSpeakingRef.current = false
   }, [])
 
   // Handle audio input from microphone
