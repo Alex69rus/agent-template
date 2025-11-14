@@ -42,8 +42,13 @@ Open: http://localhost:5173
 
 1. Click "🎤 Connect"
 2. Allow microphone access
-3. Say: "Calculate 100000 times 1.07 to the power of 30"
-4. The agent will use the calculator tool and respond
+3. Try these examples:
+   - "What's 25 times 37?"
+   - "Calculate 2 to the power of 10"
+   - "What's today's date?"
+   - "What time is it?"
+
+The agent will use the calculator and date/time tools to respond.
 
 ## Customization
 
@@ -51,7 +56,9 @@ Open: http://localhost:5173
 
 **Change Model**: Edit `backend/.env` → `MODEL=gpt-realtime-mini`
 
-**Modify Agent**: Edit `backend/agent.py` → `AGENT_INSTRUCTIONS`
+**Modify Agent**: Edit `backend/agent_config/agent_template.py` → Update `AGENT_INSTRUCTIONS`
+
+**Add Tools**: Edit `backend/agent_config/tools.py` → Add your custom tool functions
 
 ## Health Check
 
@@ -60,3 +67,7 @@ Backend: http://localhost:8000/health
 ## Stop
 
 Press `Ctrl+C` in both terminal windows
+
+---
+
+**Next Steps**: See [CUSTOMIZATION.md](CUSTOMIZATION.md) to create your own specialized agent!

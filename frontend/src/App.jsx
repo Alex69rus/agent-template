@@ -6,8 +6,8 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>💼 Finance Advisor</h1>
-        <p>Real-time Voice Agent for Retirement Planning & Investment Advice</p>
+        <h1>🎙️ Real-time Voice Agent</h1>
+        <p>AI-powered voice assistant with real-time conversation capabilities</p>
       </header>
       <VoiceAgent />
     </div>

@@ -1,18 +1,17 @@
-"""Tools for the finance agent."""
+"""Tools for the voice agent."""
 from agents import function_tool
 from datetime import datetime
 
 
 @function_tool
 def calculator_tool(expression: str) -> str:
-    """Evaluate a mathematical expression for financial calculations.
+    """Evaluate a mathematical expression.
 
-    Use this tool to perform calculations like compound interest, investment returns,
-    percentages, and other financial math.
+    Use this tool to perform calculations like arithmetic operations,
+    percentages, exponents, and other mathematical operations.
 
     Args:
-        expression: Mathematical expression to evaluate (e.g., "100000 * 1.07 ** 30"
-                   for compound interest calculation)
+        expression: Mathematical expression to evaluate (e.g., "123 * 456" or "2 ** 10")
 
     Returns:
         Result of the calculation or error message.
@@ -36,9 +35,8 @@ def calculator_tool(expression: str) -> str:
 def get_date_time_tool() -> str:
     """Get the current date and time.
 
-    Use this tool when you need current date/time information for time-relevant
-    financial context, such as discussing current market conditions, tax year,
-    or time-sensitive investment strategies.
+    Use this tool when you need current date/time information for any
+    time-relevant context or when the user asks about the current date or time.
 
     Returns:
         Current date and time with detailed information in human-readable format.

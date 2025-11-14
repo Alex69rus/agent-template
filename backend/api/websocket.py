@@ -8,7 +8,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from agents.realtime import RealtimeRunner
 
 from config import Config
-from agent_config import create_finance_agent
+from agent_config import create_agent
 
 
 logger = logging.getLogger(__name__)
@@ -24,8 +24,8 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info("Client connected")
 
     try:
-        # Create the finance agent
-        agent = create_finance_agent()
+        # Create the agent
+        agent = create_agent()
 
         # Configure the runner
         runner = RealtimeRunner(
@@ -41,8 +41,8 @@ async def websocket_endpoint(websocket: WebSocket):
             "input_audio_format": "pcm16",
             "output_audio_format": "pcm16",
             "input_audio_transcription": {
-                "model": "whisper-1",
-                "language": "en"  # Force English-only speech recognition
+                "model": "whisper-1"
+                # Language is auto-detected by default
             },
             "turn_detection": {
                 "type": "server_vad",

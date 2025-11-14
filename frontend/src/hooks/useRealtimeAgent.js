@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-const WS_URL = 'ws://localhost:8000/ws'
+// WebSocket URL - can be overridden via environment variable
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws'
 
 // Audio configuration
 const SAMPLE_RATE = 24000
@@ -20,6 +21,7 @@ export const useRealtimeAgent = () => {
   const isAgentSpeakingRef = useRef(false)
   const currentAudioSourceRef = useRef([])
   const scheduledTimeRef = useRef(0)
+  const isMutedRef = useRef(false)
 
   // Initialize audio context
   const initAudioContext = useCallback(async () => {
@@ -188,11 +190,11 @@ export const useRealtimeAgent = () => {
         audioPacketCount++
         // Log every 100 packets (roughly every 2 seconds at 24kHz with 4800 buffer)
         if (audioPacketCount % 100 === 0) {
-          console.log(`Audio processing: ${audioPacketCount} packets, wsReady: ${wsRef.current?.readyState === WebSocket.OPEN}, muted: ${isMuted}`)
+          console.log(`Audio processing: ${audioPacketCount} packets, wsReady: ${wsRef.current?.readyState === WebSocket.OPEN}, muted: ${isMutedRef.current}`)
         }
 
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          if (!isMuted) {
+          if (!isMutedRef.current) {
             const inputData = e.inputBuffer.getChannelData(0)
 
             // Detect if user is speaking using RMS volume threshold
@@ -256,7 +258,7 @@ export const useRealtimeAgent = () => {
       setStatus('error')
       throw error
     }
-  }, [isMuted, initAudioContext, stopAudioPlayback])
+  }, [initAudioContext, stopAudioPlayback])
 
   // Stop audio input
   const stopAudioInput = useCallback(() => {
@@ -417,7 +419,11 @@ export const useRealtimeAgent = () => {
 
   // Toggle mute
   const toggleMute = useCallback(() => {
-    setIsMuted(prev => !prev)
+    setIsMuted(prev => {
+      const newValue = !prev
+      isMutedRef.current = newValue
+      return newValue
+    })
   }, [])
 
   // Cleanup on unmount

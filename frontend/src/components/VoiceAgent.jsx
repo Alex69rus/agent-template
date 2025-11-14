@@ -99,15 +99,15 @@ const VoiceAgent = () => {
       <div className="info-panel">
         <h3>ℹ️ About this Agent</h3>
         <p>
-          This AI-powered finance advisor can discuss:
+          This AI-powered voice agent can:
         </p>
         <ul>
-          <li>💰 Retirement planning (401k, IRA, pensions)</li>
-          <li>📊 Risk assessment and portfolio diversification</li>
-          <li>📈 Market trends and economic indicators</li>
+          <li>🧮 Perform mathematical calculations</li>
+          <li>📅 Provide current date and time information</li>
+          <li>💬 Have natural voice conversations in real-time</li>
         </ul>
         <p className="disclaimer">
-          <strong>Note:</strong> This is educational information, not personalized financial advice.
+          <strong>Customize:</strong> Modify the agent instructions and tools in <code>backend/agent_config/</code> to create your own specialized agent.
         </p>
       </div>
     </div>
