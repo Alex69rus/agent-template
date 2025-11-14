@@ -149,7 +149,7 @@ elif event_type == "audio_end":
                │
 ┌──────────────▼──────────────────────────┐
 │  OpenAI Realtime API                    │
-│  - gpt-4o-realtime-preview-2024-12-17   │
+│  - gpt-realtime-mini   │
 │  - Voice synthesis & recognition        │
 │  - Tool calling                         │
 └─────────────────────────────────────────┘
@@ -230,7 +230,7 @@ load_dotenv()
 
 class Config:
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL: str = os.getenv("MODEL", "gpt-4o-realtime-preview-2024-12-17")
+    MODEL: str = os.getenv("MODEL", "gpt-realtime-mini")
     VOICE: str = os.getenv("VOICE", "alloy")
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
@@ -1324,7 +1324,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     model_config = {
         "api_key": "your-key",
-        "model": "gpt-4o-realtime-preview-2024-12-17",
+        "model": "gpt-realtime-mini",
         "voice": "alloy",
         "modalities": ["text", "audio"],
         "input_audio_format": "pcm16",

@@ -11,7 +11,7 @@ class Config:
 
     # OpenAI Settings
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL: str = os.getenv("MODEL", "gpt-4o-realtime-preview-2024-12-17")
+    MODEL: str = os.getenv("MODEL", "gpt-realtime-mini")
     VOICE: str = os.getenv("VOICE", "alloy")
 
     # Server Settings

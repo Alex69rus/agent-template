@@ -49,7 +49,7 @@ Open: http://localhost:5173
 
 **Change Voice**: Edit `backend/.env` → `VOICE=nova` (options: alloy, echo, fable, onyx, nova, shimmer)
 
-**Change Model**: Edit `backend/.env` → `MODEL=gpt-4o-realtime-preview-2024-12-17`
+**Change Model**: Edit `backend/.env` → `MODEL=gpt-realtime-mini`
 
 **Modify Agent**: Edit `backend/agent.py` → `AGENT_INSTRUCTIONS`
 

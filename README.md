@@ -32,7 +32,7 @@ A proof-of-concept real-time voice agent built with OpenAI's Realtime API, speci
                │ WebSocket + Auth
 ┌──────────────▼──────────────────────────┐
 │  OpenAI Realtime API                    │
-│  - gpt-4o-realtime-preview-2024-12-17   │
+│  - gpt-realtime-mini   │
 │  - Voice synthesis & recognition        │
 └─────────────────────────────────────────┘
 ```
@@ -97,7 +97,7 @@ cp .env.example .env
 
 ```env
 OPENAI_API_KEY=sk-your-actual-api-key-here
-MODEL=gpt-4o-realtime-preview-2024-12-17
+MODEL=gpt-realtime-mini
 VOICE=alloy
 HOST=0.0.0.0
 PORT=8000
@@ -221,7 +221,7 @@ realtime-agent-test/
 ### Backend (.env)
 
 - `OPENAI_API_KEY`: Your OpenAI API key (required)
-- `MODEL`: Realtime model to use (default: gpt-4o-realtime-preview-2024-12-17)
+- `MODEL`: Realtime model to use (default: gpt-realtime-mini)
 - `VOICE`: Agent voice (default: alloy)
 - `HOST`: Server host (default: 0.0.0.0)
 - `PORT`: Server port (default: 8000)
