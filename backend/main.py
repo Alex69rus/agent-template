@@ -135,39 +135,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Handle different event types
                         if event_type == "audio":
                             # Audio chunk from agent - RealtimeAudio event
-                            # event.audio contains a RealtimeModelAudioEvent with the actual audio bytes
+                            # event.audio contains a RealtimeModelAudioEvent
+                            # RealtimeModelAudioEvent.data contains the actual audio bytes
                             import base64
                             try:
-                                # Introspect the audio object once to understand structure
-                                audio_obj = event.audio
-
-                                # Log structure for debugging (only first time)
-                                if not hasattr(send_to_client, '_audio_structure_logged'):
-                                    logger.info(f"Audio structure: type={type(audio_obj)}, has_delta={hasattr(audio_obj, 'delta')}, has_audio={hasattr(audio_obj, 'audio')}, has_data={hasattr(audio_obj, 'data')}")
-                                    if hasattr(audio_obj, '__dict__'):
-                                        logger.info(f"Audio object dict keys: {audio_obj.__dict__.keys()}")
-                                    send_to_client._audio_structure_logged = True
-
-                                # Try to extract bytes from the audio object
-                                audio_bytes = None
-                                if hasattr(audio_obj, 'delta') and isinstance(audio_obj.delta, (bytes, bytearray)):
-                                    audio_bytes = audio_obj.delta
-                                elif hasattr(audio_obj, 'audio') and isinstance(audio_obj.audio, (bytes, bytearray)):
-                                    audio_bytes = audio_obj.audio
-                                elif hasattr(audio_obj, 'data') and isinstance(audio_obj.data, (bytes, bytearray)):
-                                    audio_bytes = audio_obj.data
-                                elif isinstance(audio_obj, (bytes, bytearray)):
-                                    audio_bytes = audio_obj
-
-                                if audio_bytes:
-                                    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-                                    event_data = {
-                                        "type": "response.audio.delta",
-                                        "delta": audio_base64
-                                    }
-                                else:
-                                    logger.warning(f"Could not extract audio bytes from event")
-                                    event_data = None
+                                # Extract audio bytes from RealtimeModelAudioEvent.data
+                                audio_bytes = event.audio.data
+                                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                                event_data = {
+                                    "type": "response.audio.delta",
+                                    "delta": audio_base64
+                                }
 
                             except Exception as e:
                                 logger.error(f"Error processing audio event: {e}")
