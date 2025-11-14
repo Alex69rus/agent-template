@@ -189,10 +189,7 @@ Try asking:
 ```
 realtime-agent-test/
 ├── backend/
-│   ├── main.py              # FastAPI app & WebSocket relay
-│   ├── agent.py             # Agent config, tools, instructions
-│   ├── config.py            # Environment configuration
-│   ├── requirements.txt     # Python dependencies
+│   ├── ...                  # project folders and files
 │   ├── .env.example         # Example environment variables
 │   └── .env                 # Your actual config (gitignored)
 ├── frontend/

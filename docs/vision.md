@@ -345,25 +345,21 @@ async for event in session:
     event_type = event.type if hasattr(event, 'type') else str(type(event).__name__)
 
     if event_type == "audio":
-        # event.audio contains RealtimeModelAudioEvent
-        audio_obj = event.audio
-
-        # Extract bytes - try multiple attributes
-        audio_bytes = None
-        if hasattr(audio_obj, 'delta') and isinstance(audio_obj.delta, (bytes, bytearray)):
-            audio_bytes = audio_obj.delta
-        elif hasattr(audio_obj, 'audio') and isinstance(audio_obj.audio, (bytes, bytearray)):
-            audio_bytes = audio_obj.audio
-        elif isinstance(audio_obj, (bytes, bytearray)):
-            audio_bytes = audio_obj
-
-        if audio_bytes:
-            import base64
+        # Audio chunk from agent - RealtimeAudio event
+        # event.audio contains a RealtimeModelAudioEvent
+        # RealtimeModelAudioEvent.data contains the actual audio bytes
+        try:
+            # Extract audio bytes from RealtimeModelAudioEvent.data
+            audio_bytes = event.audio.data
             audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-            await websocket.send_text(json.dumps({
+            event_data = {
                 "type": "response.audio.delta",
                 "delta": audio_base64
-            }))
+            }
+            await websocket.send_text(json.dumps(event_data))
+
+        except Exception as e:
+            logger.error(f"Error processing audio event: {e}")
 ```
 
 #### Interruption Handling
@@ -718,16 +714,16 @@ cannot convert 'RealtimeModelAudioEvent' object to bytes
 
 **Solution:**
 ```python
-# event.audio is NOT bytes, it's an object
-audio_obj = event.audio
-
-# Try multiple ways to extract bytes
-if hasattr(audio_obj, 'delta'):
-    audio_bytes = audio_obj.delta
-elif hasattr(audio_obj, 'audio'):
-    audio_bytes = audio_obj.audio
-elif isinstance(audio_obj, bytes):
-    audio_bytes = audio_obj
+# event.audio is a RealtimeModelAudioEvent object
+# The actual audio bytes are in the .data attribute
+if event_type == "audio":
+    try:
+        # Extract audio bytes from event.audio.data
+        audio_bytes = event.audio.data
+        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+        # Send to frontend
+    except Exception as e:
+        logger.error(f"Error processing audio event: {e}")
 ```
 
 ### Issue 4: Microphone Not Capturing
@@ -974,7 +970,7 @@ Agent Response
     ↓
 event.audio (RealtimeModelAudioEvent)
     ↓
-Extract bytes from event.audio.delta
+Extract bytes from event.audio.data
     ↓
 Base64 encode
     ↓
@@ -1202,7 +1198,7 @@ finally:
 
 - **Use `@function_tool`** - Not manual JSON schemas
 - **API key in `model_config`** - Not runner constructor
-- **Event structures are nested** - `event.audio.delta`, not `event.audio`
+- **Event structures are nested** - `event.audio.data`, not `event.audio` directly
 - **Tools execute automatically** - No manual call handling
 
 ### 2. Audio Processing

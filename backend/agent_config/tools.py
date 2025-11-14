@@ -50,3 +50,7 @@ def get_date_time_tool() -> str:
         f"Year: {now.year}\n"
         f"Day of week: {now.strftime('%A')}"
     )
+
+
+# List of available tools for the agent
+TOOLS = [calculator_tool, get_date_time_tool]

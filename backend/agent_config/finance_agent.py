@@ -1,5 +1,6 @@
 """Finance agent configuration."""
-from tools import calculator_tool, get_date_time_tool
+from agents.realtime import RealtimeAgent
+from .tools import TOOLS
 
 
 # Agent instructions for finance/investment discussions
@@ -24,5 +25,15 @@ Guidelines:
 Keep responses concise and conversational since this is a voice interface."""
 
 
-# List of available tools for the agent
-TOOLS = [calculator_tool, get_date_time_tool]
+def create_finance_agent() -> RealtimeAgent:
+    """Create and configure the finance advisor agent.
+
+    Returns:
+        Configured RealtimeAgent instance.
+    """
+    agent = RealtimeAgent(
+        name="FinanceAdvisor",
+        instructions=AGENT_INSTRUCTIONS,
+        tools=TOOLS
+    )
+    return agent
