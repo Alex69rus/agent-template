@@ -1,121 +1,14 @@
-# Building Real-time Voice Agents with OpenAI Agents SDK
+# Real-time Voice Agent: Architecture & Design Decisions
 
-## Complete Guide from Scratch
-
-This document captures the complete journey, challenges, and solutions for building a production-ready real-time voice agent using the OpenAI Agents SDK, FastAPI, and React.
-
----
+This document captures the architectural decisions, technology choices, and key learnings from building a production-ready real-time voice agent using the OpenAI Agents SDK.
 
 ## Table of Contents
 
-1. [Recent Improvements](#recent-improvements)
-2. [Architecture Overview](#architecture-overview)
-3. [Technology Stack](#technology-stack)
-4. [Backend Implementation](#backend-implementation)
-5. [Frontend Implementation](#frontend-implementation)
-6. [Common Issues & Solutions](#common-issues--solutions)
-7. [Audio Pipeline](#audio-pipeline)
-8. [Interruption Handling](#interruption-handling)
-9. [Tools Integration](#tools-integration)
-10. [Production Considerations](#production-considerations)
-11. [Key Learnings](#key-learnings)
-
----
-
-## Recent Improvements
-
-### Critical Fixes for Production-Ready Voice Agent
-
-**1. Smooth Audio Playback (Eliminates Stuttering)**
-- **Problem**: Sequential playback with `await` caused micro-interruptions between audio chunks
-- **Solution**: Scheduled playback using `source.start(scheduledTime)` for gap-free audio
-- **Result**: Smooth, continuous agent speech without stuttering
-- **Files**: [useRealtimeAgent.js:88-153](../frontend/src/hooks/useRealtimeAgent.js#L88-L153)
-
-**2. Noise-Resistant Interruption Detection**
-- **Problem**: Single-frame speech detection triggered false interruptions from coughs, clicks, background noise
-- **Solution**: Require 3 consecutive frames (~500ms) of sustained speech before interrupting
-- **Result**: Natural interruptions work, but brief noises don't cause false positives
-- **Files**: [useRealtimeAgent.js:118-164](../frontend/src/hooks/useRealtimeAgent.js#L118-L164)
-
-**3. Fixed Tool Event Handling**
-- **Problem**: `AttributeError: 'RealtimeToolStart' object has no attribute 'tool_name'`
-- **Solution**: Extract tool name from `event.tool` object using `getattr()`
-- **Result**: Tools execute without crashes
-- **Files**: [main.py:200-212](../backend/main.py#L200-L212)
-
-**4. Proper Interruption Cleanup**
-- **Problem**: Audio continued playing locally even after interruption signal sent
-- **Solution**: Track array of active audio sources and stop all on interruption
-- **Result**: Immediate, complete audio stop when user interrupts
-- **Files**: [useRealtimeAgent.js:66-85](../frontend/src/hooks/useRealtimeAgent.js#L66-L85)
-
-**5. Transcript Display Fixed**
-- **Problem**: Transcripts not appearing on frontend during conversation
-- **Root Cause**: Backend was listening for non-existent event types (`transcript`, `agent_audio_transcript`) instead of SDK's actual events (`transcript_delta`, `input_audio_transcription_completed`) wrapped in `raw_model_event`
-- **Solution**:
-  - Handle `raw_model_event` type and extract wrapped model events
-  - Convert `transcript_delta` → `response.audio_transcript.delta` for agent speech
-  - Convert `input_audio_transcription_completed` → `conversation.item.input_audio_transcription.completed` for user speech
-  - Emit `response.audio_transcript.done` when `audio_end` occurs to complete agent transcripts
-- **Result**: Real-time transcription display for both user and agent speech with proper completion signals
-- **Files**: [main.py:191-210](../backend/main.py#L191-L210), [main.py:177-184](../backend/main.py#L177-L184)
-
-**Key Technical Changes:**
-```javascript
-// Before: Sequential playback (caused gaps)
-await new Promise(resolve => source.onended = resolve)
-
-// After: Scheduled playback (no gaps)
-source.start(scheduledTime)
-scheduledTime += audioBuffer.duration
-```
-
-```javascript
-// Before: Single-frame detection (false positives)
-if (rms > threshold && agentSpeaking) interrupt()
-
-// After: Sustained speech detection (noise resistant)
-if (consecutiveFrames >= 3 && agentSpeaking) interrupt()
-```
-
-```python
-# Before: Wrong attributes
-event.tool_name  # ❌ AttributeError
-
-# After: Extract from tool object
-getattr(event.tool, 'name', str(event.tool))  # ✅ Works
-```
-
-```python
-# Before: Listening for wrong event types
-elif event_type == "transcript":  # ❌ Doesn't exist
-    event_data = {"type": "...", "transcript": event.text}
-elif event_type == "agent_audio_transcript":  # ❌ Doesn't exist
-    event_data = {"type": "...", "delta": event.text}
-
-# After: Handle raw_model_event wrapper
-elif event_type == "raw_model_event":  # ✅ Correct
-    model_event = event.data
-    if model_event.type == "transcript_delta":
-        # Agent speech streaming
-        event_data = {
-            "type": "response.audio_transcript.delta",
-            "delta": model_event.delta
-        }
-    elif model_event.type == "input_audio_transcription_completed":
-        # User speech completed
-        event_data = {
-            "type": "conversation.item.input_audio_transcription.completed",
-            "transcript": model_event.transcript
-        }
-
-# And emit completion signal
-elif event_type == "audio_end":
-    # Send both audio done AND transcript done
-    await websocket.send_text(json.dumps({"type": "response.audio.done"}))
-    event_data = {"type": "response.audio_transcript.done"}  # ✅ Completes transcript
-```
+1. [Architecture Overview](#architecture-overview)
+2. [Technology Stack & Rationale](#technology-stack--rationale)
+3. [Critical Design Decisions](#critical-design-decisions)
+4. [Key Technical Challenges & Solutions](#key-technical-challenges--solutions)
+5. [Production Considerations](#production-considerations)
 
 ---
 
@@ -155,1243 +48,407 @@ elif event_type == "audio_end":
 └─────────────────────────────────────────┘
 ```
 
-### Why This Architecture?
+### Architecture Rationale
 
-- **WebSocket Relay**: Keeps API keys secure server-side
-- **Event Transformation**: Bridges OpenAI SDK events to frontend-compatible format
-- **Bidirectional Streaming**: Real-time audio in both directions
-- **Tool Execution**: Server-side execution of tools for security
+**Why WebSocket Relay?**
+- Keeps API keys secure on server-side
+- Enables event transformation between OpenAI SDK and frontend formats
+- Provides centralized point for logging, monitoring, and rate limiting
 
----
+**Why Server-Side Agent?**
+- Tool execution security (no client-side code execution)
+- API key protection
+- Centralized state management and session handling
 
-## Technology Stack
-
-### Backend
-
-```python
-# requirements.txt
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-websockets==14.1
-openai-agents==0.5.0
-python-dotenv==1.0.1
-```
-
-**Key Components:**
-- **FastAPI**: Async web framework with native WebSocket support
-- **OpenAI Agents SDK**: Official SDK for Realtime API integration
-- **Python 3.13**: Latest Python with improved async performance
-
-### Frontend
-
-```json
-{
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.3"
-  }
-}
-```
-
-**Key Technologies:**
-- **React**: UI framework
-- **Web Audio API**: Native browser audio processing
-- **WebSocket API**: Browser WebSocket client
-- **Vite**: Fast build tool with HMR
+**Why Bidirectional Streaming?**
+- Required for real-time voice interaction
+- Low-latency audio transmission in both directions
+- Enables natural interruption handling
 
 ---
 
-## Backend Implementation
+## Technology Stack & Rationale
 
-### 1. Project Structure
+### Backend Stack
 
-```
-backend/
-├── main.py              # FastAPI app & WebSocket endpoint
-├── agent.py             # Agent configuration
-├── tools.py             # @function_tool decorated tools
-├── config.py            # Environment configuration
-├── requirements.txt     # Dependencies
-├── .env.example         # Configuration template
-└── .env                 # Actual config (gitignored)
-```
+| Technology | Version | Why Chosen |
+|-----------|---------|------------|
+| **FastAPI** | 0.115.6 | Native async/await support, built-in WebSocket handling, excellent performance |
+| **OpenAI Agents SDK** | 0.5.0 | Official SDK for Realtime API, handles tool calling automatically, manages conversation state |
+| **Python 3.13** | Latest | Improved async performance, better error messages |
+| **uvicorn** | 0.34.0 | ASGI server with WebSocket support |
 
-### 2. Configuration (`config.py`)
+**Key Decision**: FastAPI over Flask/Django
+- **Rationale**: Native async support is critical for WebSocket relay performance. FastAPI's async-first design eliminates thread overhead and simplifies bidirectional streaming implementation.
 
-```python
-import os
-from dotenv import load_dotenv
+### Frontend Stack
 
-load_dotenv()
+| Technology | Why Chosen |
+|-----------|------------|
+| **React 18** | Component architecture, hooks for audio state management |
+| **Web Audio API** | Native browser audio processing, low latency, precise timing control |
+| **Native WebSocket API** | Direct browser support, no library overhead |
+| **Vite** | Fast dev server with HMR, optimized production builds |
 
-class Config:
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL: str = os.getenv("MODEL", "gpt-realtime-mini")
-    VOICE: str = os.getenv("VOICE", "alloy")
-    HOST: str = os.getenv("HOST", "0.0.0.0")
-    PORT: int = int(os.getenv("PORT", "8000"))
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+**Key Decision**: Web Audio API over Media Recorder API
+- **Rationale**: Web Audio API provides:
+  - Precise timing control for scheduled audio playback (eliminates stuttering)
+  - Real-time audio processing for interruption detection
+  - Fine-grained control over audio format conversion
+  - Lower latency than Media Recorder
 
-    @classmethod
-    def validate(cls) -> None:
-        if not cls.OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY is required")
-
-Config.validate()
-```
-
-### 3. Tools (`tools.py`)
-
-**Critical Pattern: Use `@function_tool` decorator**
-
-```python
-from agents import function_tool
-from datetime import datetime
-
-@function_tool
-def calculator_tool(expression: str) -> str:
-    """Evaluate mathematical expressions.
-
-    Args:
-        expression: Math expression to evaluate (e.g., "100000 * 1.07 ** 30")
-
-    Returns:
-        Result of calculation or error message.
-    """
-    try:
-        allowed = {"abs": abs, "round": round, "min": min, "max": max, "pow": pow}
-        result = eval(expression, {"__builtins__": {}}, allowed)
-        return f"Result: {result:,.2f}" if isinstance(result, (int, float)) else str(result)
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-@function_tool
-def get_date_time_tool() -> str:
-    """Get current date and time.
-
-    Returns:
-        Current date/time in human-readable format.
-    """
-    now = datetime.now()
-    return f"Current date: {now.strftime('%B %d, %Y at %I:%M %p')}"
-```
-
-**Key Points:**
-- Docstring becomes tool description
-- Type hints define parameters
-- Return strings (not JSON) for voice responses
-- Use `@function_tool` decorator (not manual tool definitions)
-
-### 4. Agent Configuration (`agent.py`)
-
-```python
-from tools import calculator_tool, get_date_time_tool
-
-AGENT_INSTRUCTIONS = """You are a helpful AI voice assistant.
-
-Be short, concise and conversational - this is a voice interface.
-
-Your capabilities:
-- Perform mathematical calculations
-- Provide current date and time information
-- Have natural, helpful conversations
-
-Guidelines:
-- Use calculator tool for math operations
-- Use date/time tool when current date/time is needed
-- Be conversational and friendly
-- Keep responses brief and clear for voice interaction
-"""
-
-# Simple list of tools - SDK handles the rest
-TOOLS = [calculator_tool, get_date_time_tool]
-```
-
-### 5. Main Application (`main.py`)
-
-**Critical Implementation Details:**
-
-#### API Key Configuration
-
-```python
-# WRONG - API key in RealtimeRunner constructor
-runner = RealtimeRunner(
-    starting_agent=agent,
-    api_key=Config.OPENAI_API_KEY  # ❌ This doesn't work
-)
-
-# CORRECT - API key in model_config
-runner = RealtimeRunner(starting_agent=agent)
-
-model_config = {
-    "api_key": Config.OPENAI_API_KEY,  # ✅ Pass it here
-    "model": Config.MODEL,
-    "voice": Config.VOICE,
-    # ...other config
-}
-
-async with await runner.run(model_config=model_config) as session:
-    # Use session
-```
-
-#### Audio Event Handling
-
-```python
-async for event in session:
-    event_type = event.type if hasattr(event, 'type') else str(type(event).__name__)
-
-    if event_type == "audio":
-        # Audio chunk from agent - RealtimeAudio event
-        # event.audio contains a RealtimeModelAudioEvent
-        # RealtimeModelAudioEvent.data contains the actual audio bytes
-        try:
-            # Extract audio bytes from RealtimeModelAudioEvent.data
-            audio_bytes = event.audio.data
-            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-            event_data = {
-                "type": "response.audio.delta",
-                "delta": audio_base64
-            }
-            await websocket.send_text(json.dumps(event_data))
-
-        except Exception as e:
-            logger.error(f"Error processing audio event: {e}")
-```
-
-#### Interruption Handling
-
-```python
-async def receive_from_client():
-    while True:
-        data = await websocket.receive_text()
-        message = json.loads(data)
-
-        if message.get("type") == "input_audio_buffer.append":
-            audio_bytes = base64.b64decode(message["audio"])
-            await session.send_audio(audio_bytes)
-
-        elif message.get("type") == "response.cancel":
-            # User interrupted - stop agent immediately
-            await session.interrupt()
-```
+**Key Decision**: No audio libraries (howler.js, tone.js)
+- **Rationale**: Direct Web Audio API usage gives full control over audio pipeline, critical for smooth playback and interruption handling
 
 ---
 
-## Frontend Implementation
+## Critical Design Decisions
 
-### 1. Project Structure
+### 1. Audio Playback: Scheduled vs Sequential
 
-```
-frontend/
-├── src/
-│   ├── components/
-│   │   ├── VoiceAgent.jsx        # Main UI component
-│   │   ├── VoiceAgent.css
-│   │   ├── Transcript.jsx        # Conversation display
-│   │   └── Transcript.css
-│   ├── hooks/
-│   │   └── useRealtimeAgent.js   # WebSocket & audio logic
-│   ├── App.jsx
-│   ├── App.css
-│   ├── main.jsx
-│   └── index.css
-├── index.html
-├── package.json
-└── vite.config.js
-```
+**Decision**: Use Web Audio API's scheduled playback with `source.start(scheduledTime)`
 
-### 2. Audio Configuration
+**Problem**: Sequential playback with `await` caused micro-interruptions between audio chunks, creating stuttering effect
 
-**Critical: Buffer size MUST be power of 2**
+**Rationale**:
+- Web Audio API provides precise timing control at audio engine level
+- Scheduling eliminates JavaScript event loop delays between chunks
+- Allows tracking multiple active sources for proper interruption handling
+- Results in gap-free, smooth audio playback
 
-```javascript
-const SAMPLE_RATE = 24000
-const BUFFER_SIZE = 4096  // ✅ Power of 2 (not 4800!)
-
-// WRONG: const BUFFER_SIZE = 4800
-// ERROR: "buffer size (4800) must be 0 or a power of two between 256 and 16384"
-```
-
-**Valid buffer sizes:** 256, 512, 1024, 2048, 4096, 8192, 16384
-
-### 3. Audio Capture Pipeline
-
-```javascript
-async function startAudioInput() {
-    // 1. Get microphone access
-    const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-            channelCount: 1,           // Mono
-            sampleRate: SAMPLE_RATE,    // 24kHz
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-        }
-    })
-
-    // 2. Create audio context
-    const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE })
-    const source = audioContext.createMediaStreamSource(stream)
-
-    // 3. Create processor (must be power of 2!)
-    const processor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1)
-
-    // 4. Process audio
-    processor.onaudioprocess = (e) => {
-        if (wsRef.current?.readyState === WebSocket.OPEN && !isMuted) {
-            const inputData = e.inputBuffer.getChannelData(0)
-            const int16Data = floatTo16BitPCM(inputData)
-
-            // Convert to base64
-            const base64 = btoa(
-                String.fromCharCode.apply(null, new Uint8Array(int16Data.buffer))
-            )
-
-            // Send to server
-            wsRef.current.send(JSON.stringify({
-                type: 'input_audio_buffer.append',
-                audio: base64
-            }))
-        }
-    }
-
-    // 5. Connect pipeline
-    source.connect(processor)
-    processor.connect(audioContext.destination)
-}
-```
-
-### 4. Audio Format Conversion
-
-```javascript
-// Float32 [-1, 1] to PCM16 [-32768, 32767]
-function floatTo16BitPCM(float32Array) {
-    const int16Array = new Int16Array(float32Array.length)
-    for (let i = 0; i < float32Array.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32Array[i]))
-        int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
-    }
-    return int16Array
-}
-
-// PCM16 to Float32 for playback
-function int16ToFloat32(int16Array) {
-    const float32Array = new Float32Array(int16Array.length)
-    for (let i = 0; i < int16Array.length; i++) {
-        float32Array[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF)
-    }
-    return float32Array
-}
-
-// Base64 to PCM16
-function base64ToInt16Array(base64) {
-    const binaryString = atob(base64)
-    const bytes = new Uint8Array(binaryString.length)
-    for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i)
-    }
-    return new Int16Array(bytes.buffer)
-}
-```
-
-### 5. Audio Playback (Scheduled for Smooth Playback)
-
-**Critical: Use scheduled playback to eliminate micro-interruptions**
-
-```javascript
-// WRONG: Sequential playback causes gaps
-async function playAudioFromQueue() {
-    while (audioQueueRef.current.length > 0) {
-        const chunk = audioQueueRef.current.shift()
-        // ...create buffer
-        await new Promise(resolve => {
-            source.onended = resolve
-            source.start()  // ❌ Waits for previous chunk, causes gaps
-        })
-    }
-}
-
-// CORRECT: Scheduled playback for smooth continuous audio
-function playAudioFromQueue() {
-    if (audioQueueRef.current.length === 0) return
-
-    const audioContext = audioContextRef.current
-    isAgentSpeakingRef.current = true
-
-    // Initialize scheduled time if not playing
-    if (!isPlayingRef.current || scheduledTimeRef.current < audioContext.currentTime) {
-        scheduledTimeRef.current = audioContext.currentTime + 0.05 // 50ms buffer
-        isPlayingRef.current = true
-    }
-
-    // Schedule all queued audio chunks
-    while (audioQueueRef.current.length > 0) {
-        const int16Array = audioQueueRef.current.shift()
-        const float32Array = int16ToFloat32(int16Array)
-
-        const audioBuffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE)
-        audioBuffer.getChannelData(0).set(float32Array)
-
-        const source = audioContext.createBufferSource()
-        source.buffer = audioBuffer
-        source.connect(audioContext.destination)
-
-        // Track active sources for interruption
-        currentAudioSourceRef.current.push(source)
-
-        // Schedule this chunk to play immediately after the previous one
-        source.start(scheduledTimeRef.current)  // ✅ Precise scheduling, no gaps!
-
-        // Calculate when this chunk will finish
-        const chunkDuration = audioBuffer.duration
-        scheduledTimeRef.current += chunkDuration
-
-        // Clean up source reference when it ends
-        source.onended = () => {
-            const index = currentAudioSourceRef.current.indexOf(source)
-            if (index > -1) {
-                currentAudioSourceRef.current.splice(index, 1)
-            }
-
-            // Check if playback is complete
-            if (currentAudioSourceRef.current.length === 0 &&
-                audioQueueRef.current.length === 0) {
-                isPlayingRef.current = false
-                isAgentSpeakingRef.current = false
-                scheduledTimeRef.current = 0
-            }
-        }
-    }
-}
-```
-
-**Key Differences:**
-- **Scheduled timing**: Uses `source.start(scheduledTime)` instead of `source.start()`
-- **No await**: Doesn't wait for chunks to finish - schedules them all immediately
-- **Precise scheduling**: Web Audio API handles exact timing, no JavaScript delays
-- **Multiple sources**: Tracks array of active sources for proper interruption
-- **Result**: Smooth, continuous audio without gaps or stuttering
-
-### 6. Interruption Detection (Noise-Resistant)
-
-**Critical: Require sustained speech to avoid false interruptions from noise**
-
-```javascript
-// Configuration
-const SPEECH_THRESHOLD = 0.015  // RMS threshold (adjust based on environment)
-const SUSTAINED_SPEECH_FRAMES = 3  // Require 3 consecutive frames (~500ms)
-
-let consecutiveSpeechFrames = 0
-let interruptionSent = false
-
-processor.onaudioprocess = (e) => {
-    const inputData = e.inputBuffer.getChannelData(0)
-
-    // Calculate RMS (Root Mean Square) volume
-    let sum = 0
-    for (let i = 0; i < inputData.length; i++) {
-        sum += inputData[i] * inputData[i]
-    }
-    const rms = Math.sqrt(sum / inputData.length)
-    const isSpeaking = rms > SPEECH_THRESHOLD
-
-    // Track consecutive frames of speech
-    if (isSpeaking) {
-        consecutiveSpeechFrames++
-    } else {
-        consecutiveSpeechFrames = 0
-        interruptionSent = false  // Reset when user stops speaking
-    }
-
-    // Only interrupt if we detect sustained speech (not just noise)
-    if (consecutiveSpeechFrames >= SUSTAINED_SPEECH_FRAMES &&
-        !interruptionSent &&
-        isAgentSpeakingRef.current) {
-
-        console.log('Sustained user speech detected - interrupting agent')
-        interruptionSent = true
-
-        // Send interruption signal to backend
-        wsRef.current.send(JSON.stringify({
-            type: 'response.cancel'
-        }))
-
-        // Immediately stop local playback
-        stopAudioPlayback()
-    }
-
-    // Continue processing audio...
-}
-
-function stopAudioPlayback() {
-    // Stop all playing audio sources
-    if (currentAudioSourceRef.current && currentAudioSourceRef.current.length > 0) {
-        currentAudioSourceRef.current.forEach(source => {
-            try {
-                source.stop()
-                source.disconnect()
-            } catch (e) {
-                // Ignore errors if already stopped
-            }
-        })
-    }
-    currentAudioSourceRef.current = []
-
-    // Clear queue
-    audioQueueRef.current = []
-    isPlayingRef.current = false
-    isAgentSpeakingRef.current = false
-    scheduledTimeRef.current = 0
-}
-```
-
-**Why Sustained Speech Detection?**
-- **Problem**: Single-frame detection triggers on coughs, clicks, background noise
-- **Solution**: Require 3 consecutive frames (≈500ms) of speech
-- **Result**: Natural interruptions work, but noise doesn't trigger false positives
-
-**Tuning Parameters:**
-```javascript
-// More sensitive (interrupts faster, more false positives)
-const SPEECH_THRESHOLD = 0.01
-const SUSTAINED_SPEECH_FRAMES = 2
-
-// Less sensitive (fewer false positives, slower interruption)
-const SPEECH_THRESHOLD = 0.02
-const SUSTAINED_SPEECH_FRAMES = 4
-```
+**Key Implementation**: Track scheduled time and increment by buffer duration, schedule all chunks immediately without waiting
 
 ---
 
-## Common Issues & Solutions
+### 2. Interruption Detection: Sustained Speech Recognition
 
-### Issue 1: Buffer Size Error
+**Decision**: Require 3 consecutive frames (~500ms) of sustained speech before triggering interruption
 
-**Error:**
-```
-IndexSizeError: Failed to execute 'createScriptProcessor' on 'BaseAudioContext':
-buffer size (4800) must be 0 or a power of two between 256 and 16384.
-```
+**Problem**: Single-frame RMS threshold detection triggered false interruptions from coughs, keyboard clicks, and background noise
 
-**Solution:**
-```javascript
-// WRONG
-const BUFFER_SIZE = 4800  // ❌
+**Rationale**:
+- Human speech is sustained over multiple frames
+- Brief environmental noises are typically single spikes
+- 500ms delay is imperceptible to users but filters most false positives
+- Balances natural conversation flow with noise resistance
 
-// CORRECT
-const BUFFER_SIZE = 4096  // ✅ Power of 2
-```
+**Parameters**:
+- RMS Threshold: 0.015 (adjustable based on environment)
+- Consecutive Frames: 3 frames at 4096 buffer size ≈ 500ms
+- Reset counter when user stops speaking to allow re-interruption
 
-### Issue 2: API Key Configuration
+---
 
-**Error:**
-```
-RealtimeRunner.__init__() got an unexpected keyword argument 'api_key'
-```
+### 3. OpenAI SDK Integration: API Key Location
 
-**Solution:**
-```python
-# WRONG
-runner = RealtimeRunner(starting_agent=agent, api_key=key)  # ❌
+**Decision**: Pass API key in `model_config` parameter, not `RealtimeRunner` constructor
 
-# CORRECT
-runner = RealtimeRunner(starting_agent=agent)
-model_config = {"api_key": key, ...}
-async with await runner.run(model_config=model_config) as session:
-    ...
-```
+**Problem**: SDK architecture doesn't accept API key in constructor
 
-### Issue 3: Audio Event Structure
+**Rationale**:
+- SDK design separates runner initialization from session configuration
+- `model_config` passed to `runner.run()` method is the correct pattern
+- Allows dynamic configuration per session while reusing runner instance
 
-**Error:**
-```
-cannot convert 'RealtimeModelAudioEvent' object to bytes
-```
+---
 
-**Solution:**
-```python
-# event.audio is a RealtimeModelAudioEvent object
-# The actual audio bytes are in the .data attribute
-if event_type == "audio":
-    try:
-        # Extract audio bytes from event.audio.data
-        audio_bytes = event.audio.data
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        # Send to frontend
-    except Exception as e:
-        logger.error(f"Error processing audio event: {e}")
-```
+### 4. Event Handling: SDK Event Structure
 
-### Issue 4: Microphone Not Capturing
+**Decision**: Extract audio data from nested `event.audio.data` structure, handle `raw_model_event` wrapper for transcripts
 
-**Symptoms:** WebSocket connected, but no audio data sent from frontend
+**Problems**:
+- Audio events contain `RealtimeModelAudioEvent` objects, not raw bytes
+- Transcript events wrapped in `raw_model_event` envelope
 
-**Debug Steps:**
-1. Check console for `getUserMedia` errors
-2. Verify microphone permissions granted
-3. Check buffer size is power of 2
-4. Add logging in `onaudioprocess` callback
-5. Verify WebSocket `readyState === WebSocket.OPEN`
+**Rationale**:
+- SDK provides structured events with metadata (timestamps, IDs)
+- Nested structure allows future extensibility without breaking changes
+- `raw_model_event` wrapper distinguishes SDK-generated vs API-passthrough events
 
-**Solution:**
-```javascript
-// Add debug logging
-processor.onaudioprocess = (e) => {
-    console.log('Audio processing', {
-        wsReady: wsRef.current?.readyState === WebSocket.OPEN,
-        muted: isMuted,
-        bufferSize: e.inputBuffer.length
-    })
-    // ...rest of processing
-}
-```
+**Key Implementation**:
+- Audio: `event.audio.data` contains the PCM16 bytes
+- Transcripts: `event.data` contains `transcript_delta` or `input_audio_transcription_completed`
+- Must emit both streaming deltas AND completion signals for agent transcripts
 
-### Issue 5: Audio Not Playing
+---
 
-**Symptoms:** Receiving audio events but no sound
+### 5. Tool Integration: Decorator Pattern
 
-**Common Causes:**
-1. AudioContext suspended
-2. Audio queue not being processed
-3. Format conversion error
-4. currentAudioSourceRef not initialized as array
+**Decision**: Use `@function_tool` decorator instead of manual JSON schema definition
 
-**Solution:**
-```javascript
-// Resume AudioContext if suspended
-if (audioContext.state === 'suspended') {
-    await audioContext.resume()
-}
+**Rationale**:
+- SDK automatically extracts function signature to generate JSON schema
+- Docstrings become tool descriptions visible to agent
+- Type hints define parameter types and requirements
+- Reduces boilerplate and prevents schema/implementation drift
+- Tool execution handled automatically by SDK
 
-// Ensure playback is triggered
-function handleAudioDelta(data) {
-    const int16Array = base64ToInt16Array(data.delta)
-    audioQueueRef.current.push(int16Array)
-    playAudioFromQueue()  // ✅ Must trigger this
-}
+**Key Pattern**: Return strings (not JSON) for voice responses - agent speaks the return value
 
-// Initialize refs correctly for scheduled playback
-const currentAudioSourceRef = useRef([])  // ✅ Array, not null
-const scheduledTimeRef = useRef(0)
-```
+---
 
-### Issue 6: Audio Has Micro-Interruptions / Stuttering
+### 6. Audio Format: PCM16 at 24kHz
 
-**Symptoms:** Audio plays but has brief gaps/stuttering between chunks
+**Decision**: Use 16-bit PCM at 24kHz sample rate, mono channel
 
-**Cause:** Sequential playback with `await` causes JavaScript execution delays between chunks
+**Rationale**:
+- OpenAI Realtime API requirement
+- 24kHz sufficient for voice (22.05kHz Nyquist covers human speech)
+- Mono adequate for voice interaction (stereo unnecessary)
+- PCM16 balances quality with bandwidth (vs PCM24/32)
+- Lower than music quality (44.1/48kHz) but optimized for latency
 
-**WRONG:**
-```javascript
-// ❌ Sequential playback - causes gaps
-while (queue.length > 0) {
-    const chunk = queue.shift()
-    await new Promise(resolve => {
-        source.onended = resolve
-        source.start()  // Waits for previous chunk
-    })
-}
-```
+**Format Chain**: Float32 (Web Audio) ↔ PCM16 ↔ Base64 (WebSocket)
 
-**CORRECT:**
-```javascript
-// ✅ Scheduled playback - no gaps
-let scheduledTime = audioContext.currentTime + 0.05
+---
 
-while (queue.length > 0) {
-    const chunk = queue.shift()
-    const source = createAudioSource(chunk)
+### 7. Buffer Size: Power of 2 Constraint
 
-    source.start(scheduledTime)  // Schedule precisely
-    scheduledTime += source.buffer.duration  // Track timing
-}
-```
+**Decision**: Use 4096 samples per buffer (not 4800 or arbitrary sizes)
 
-**Key Points:**
-- Use `source.start(time)` with scheduled time, not `source.start()`
-- Don't `await` between chunks - schedule them all immediately
-- Web Audio API handles precise timing internally
-- Track array of active sources for proper interruption
+**Rationale**:
+- Web Audio API requirement: buffer size must be power of 2 between 256-16384
+- 4096 chosen as balance:
+  - Smaller (256-2048): Lower latency but higher CPU overhead
+  - Larger (8192-16384): Lower CPU but higher latency
+- At 24kHz: 4096 samples = 170ms latency (acceptable for voice)
 
-### Issue 7: Tool Events Causing AttributeError
+---
 
-**Error:**
-```
-AttributeError: 'RealtimeToolStart' object has no attribute 'tool_name'
-```
+## Key Technical Challenges & Solutions
 
-**Cause:** SDK event structure doesn't have `tool_name` or `tool_call_id` attributes
+### 1. Audio Stuttering Between Chunks
 
-**WRONG:**
-```python
-if event_type == "tool_start":
-    name = event.tool_name  # ❌ Doesn't exist
-    call_id = event.tool_call_id  # ❌ Doesn't exist
-```
+**Challenge**: Audio playback had micro-interruptions between chunks, creating noticeable stuttering
 
-**CORRECT:**
-```python
-if event_type == "tool_start":
-    # Extract name from tool object
-    tool_name = getattr(event.tool, 'name', str(event.tool))
-    arguments = event.arguments  # JSON string
-    output = event.output  # For tool_end events
-```
+**Root Cause**: Sequential playback with `await` introduced JavaScript event loop delays between audio chunks
 
-### Issue 8: Transcripts Not Appearing on Frontend
+**Solution**: Implemented Web Audio API scheduled playback
+- Track scheduled time and increment by buffer duration
+- Use `source.start(scheduledTime)` to schedule all chunks immediately
+- No `await` between chunks - Web Audio API handles precise timing
+- Track array of active sources for proper interruption handling
 
-**Symptoms:** "📝 Transcript will appear here..." message stays empty during conversation, no transcripts display
+**Impact**: Eliminated all audio stuttering, achieving smooth continuous playback
 
-**Cause:** Backend listening for wrong event types that don't exist in the SDK
+---
 
-**WRONG:**
-```python
-# These event types don't exist in the SDK
-elif event_type == "transcript":
-    event_data = {
-        "type": "conversation.item.input_audio_transcription.completed",
-        "transcript": event.text  # ❌ event.text doesn't exist
-    }
+### 2. False Interruptions from Background Noise
 
-elif event_type == "agent_audio_transcript":
-    event_data = {
-        "type": "response.audio_transcript.delta",
-        "delta": event.text  # ❌ event.text doesn't exist
-    }
-```
+**Challenge**: Agent speech interrupted by coughs, keyboard clicks, and environmental sounds
 
-**CORRECT:**
-```python
-# SDK wraps transcript events in raw_model_event
-elif event_type == "raw_model_event":
-    model_event = event.data
-    model_event_type = model_event.type if hasattr(model_event, 'type') else None
+**Root Cause**: Single-frame RMS threshold detection too sensitive to brief noise spikes
 
-    if model_event_type == "transcript_delta":
-        # Agent speech transcript delta (streaming)
-        event_data = {
-            "type": "response.audio_transcript.delta",
-            "delta": model_event.delta  # ✅ Correct attribute
-        }
-    elif model_event_type == "input_audio_transcription_completed":
-        # User speech transcription (completed)
-        event_data = {
-            "type": "conversation.item.input_audio_transcription.completed",
-            "transcript": model_event.transcript  # ✅ Correct attribute
-        }
+**Solution**: Implemented sustained speech detection
+- Require 3 consecutive frames (~500ms) above threshold
+- Reset counter when RMS drops below threshold
+- Configurable threshold (0.015) and frame count
 
-# CRITICAL: Also emit completion signal
-elif event_type == "audio_end":
-    # Send BOTH audio done and transcript done
-    await websocket.send_text(json.dumps({
-        "type": "response.audio.done"
-    }))
-    event_data = {
-        "type": "response.audio_transcript.done"  # ✅ Marks transcript complete
-    }
-```
+**Impact**: Natural user interruptions work perfectly while filtering false positives from environmental noise
 
-**Key Points:**
-- The SDK emits `transcript_delta` events wrapped in `raw_model_event`
-- Must extract `event.data` to get the actual model event
-- Agent transcripts need BOTH streaming deltas AND a completion signal
-- Without the completion signal, frontend keeps showing typing indicator ("...")
-- User transcripts come as single `input_audio_transcription_completed` events
+---
 
-### Issue 9: False Interruptions from Background Noise
+### 3. Transcripts Not Displaying
 
-**Symptoms:** Agent gets interrupted by coughs, keyboard clicks, background sounds
+**Challenge**: Real-time transcription not appearing on frontend despite backend receiving events
 
-**Cause:** Single-frame speech detection is too sensitive
+**Root Cause**: Backend listening for incorrect event types that don't exist in SDK
 
-**WRONG:**
-```javascript
-const isSpeaking = rms > 0.01
-if (isSpeaking && isAgentSpeaking) {
-    interrupt()  // ❌ Triggers on single noise spike
-}
-```
+**Solution**: Correctly handle SDK event structure
+- Listen for `raw_model_event` wrapper events
+- Extract `event.data` to access `transcript_delta` and `input_audio_transcription_completed`
+- Emit both streaming deltas AND completion signal (`response.audio_transcript.done`)
 
-**CORRECT:**
-```javascript
-// Require sustained speech
-let consecutiveFrames = 0
+**Impact**: Real-time transcription works for both user and agent speech with proper completion
 
-if (isSpeaking) {
-    consecutiveFrames++
-} else {
-    consecutiveFrames = 0
-}
+---
 
-// Only interrupt after 3 consecutive frames (~500ms)
-if (consecutiveFrames >= 3 && isAgentSpeaking) {
-    interrupt()  // ✅ Filters out brief noise
-}
-```
+### 4. Tool Execution Crashes
+
+**Challenge**: `AttributeError: 'RealtimeToolStart' object has no attribute 'tool_name'`
+
+**Root Cause**: Incorrect assumptions about SDK event structure attributes
+
+**Solution**: Extract tool name from nested object
+- Use `getattr(event.tool, 'name', str(event.tool))` to safely extract tool name
+- Access `event.arguments` for parameters (JSON string)
+- Access `event.output` for tool results
+
+**Impact**: Stable tool execution without crashes
+
+---
+
+### 5. API Key Configuration
+
+**Challenge**: `RealtimeRunner.__init__() got an unexpected keyword argument 'api_key'`
+
+**Root Cause**: SDK architecture separates runner initialization from session configuration
+
+**Solution**: Pass API key in `model_config` parameter to `runner.run()` method, not constructor
+
+**Impact**: Proper SDK initialization, allows session-specific configuration
+
+---
+
+### 6. Audio Event Structure Confusion
+
+**Challenge**: `cannot convert 'RealtimeModelAudioEvent' object to bytes`
+
+**Root Cause**: Audio events contain nested objects, not raw bytes
+
+**Solution**: Extract audio bytes from `event.audio.data` instead of `event.audio`
+
+**Impact**: Correct audio streaming from backend to frontend
+
+---
+
+### 7. Incomplete Interruption Cleanup
+
+**Challenge**: Audio continued playing locally after sending interruption signal to backend
+
+**Root Cause**: Single audio source reference, not tracking all active scheduled audio sources
+
+**Solution**: Maintain array of active sources and stop all on interruption
+- Track all scheduled sources in array
+- On interruption: stop and disconnect all sources
+- Clear audio queue and reset playback state
+
+**Impact**: Immediate, complete audio stop when user interrupts
 
 ---
 
 ## Audio Pipeline
 
-### Complete Flow
+### Data Flow
 
+**User Input Path**:
 ```
-User Speech
-    ↓
-Microphone Input
-    ↓
-getUserMedia() → MediaStream
-    ↓
-createMediaStreamSource() → MediaStreamSourceNode
-    ↓
-createScriptProcessor(4096, 1, 1) → ScriptProcessorNode
-    ↓
-onaudioprocess callback
-    ↓
-Float32Array [-1, 1]
-    ↓
-floatTo16BitPCM() → Int16Array [-32768, 32767]
-    ↓
-Base64 encode
-    ↓
-WebSocket send → Backend
-    ↓
-Base64 decode
-    ↓
-session.send_audio(bytes)
-    ↓
-OpenAI Realtime API
-    ↓
-Agent Response
-    ↓
-event.audio (RealtimeModelAudioEvent)
-    ↓
-Extract bytes from event.audio.data
-    ↓
-Base64 encode
-    ↓
-WebSocket send → Frontend
-    ↓
-Base64 decode → Int16Array
-    ↓
-int16ToFloat32() → Float32Array
-    ↓
-createBuffer() → AudioBuffer
-    ↓
-createBufferSource() → AudioBufferSourceNode
-    ↓
-source.start()
-    ↓
-Speaker Output
+Microphone → getUserMedia (MediaStream) → ScriptProcessor (4096 samples) →
+Float32 → PCM16 conversion → Base64 encoding → WebSocket →
+Backend decode → session.send_audio() → OpenAI Realtime API
 ```
 
-### Audio Format Requirements
-
-**OpenAI Realtime API:**
-- Format: PCM16 (16-bit linear PCM)
-- Sample Rate: 24000 Hz
-- Channels: Mono (1 channel)
-- Encoding: Base64 (for WebSocket transport)
-
-**Web Audio API:**
-- Input: Float32Array [-1.0, 1.0]
-- Output: Float32Array [-1.0, 1.0]
-- Sample Rate: 24000 Hz (configurable)
-
-**Conversion:**
-- Frontend Float32 → PCM16 → Base64 → Backend
-- Backend Base64 → PCM16 → OpenAI
-- OpenAI PCM16 → Base64 → Backend
-- Backend Base64 → PCM16 → Float32 → Frontend
-
----
-
-## Interruption Handling
-
-### Why Interruptions Matter
-
-In voice conversations, users expect to interrupt the agent naturally, just like human conversations. Without interruption handling:
-- Users must wait for agent to finish speaking
-- Feels robotic and frustrating
-- Poor user experience
-
-### Implementation Strategy
-
-**1. Frontend Detection (Immediate)**
-```javascript
-// Detect user speech via RMS volume
-const rms = calculateRMS(audioData)
-if (rms > THRESHOLD && isAgentSpeaking) {
-    // Interrupt detected!
-
-    // 1. Stop local playback immediately
-    stopAudioPlayback()
-
-    // 2. Notify backend
-    ws.send(JSON.stringify({ type: 'response.cancel' }))
-}
+**Agent Response Path**:
+```
+OpenAI Realtime API → event.audio.data (PCM16) → Base64 encoding →
+WebSocket → Frontend decode → PCM16 → Float32 conversion →
+AudioBuffer → Scheduled playback → Speakers
 ```
 
-**2. Backend Handling**
-```python
-if message_type == "response.cancel":
-    await session.interrupt()  # Stops OpenAI generation
-```
+### Format Specifications
 
-**3. Cleanup**
-```javascript
-// Handle interruption confirmation
-if (event.type === "response.audio.interrupted") {
-    stopAudioPlayback()  // Ensure stopped
-}
-```
+| Stage | Format | Range | Notes |
+|-------|--------|-------|-------|
+| **Web Audio Input** | Float32Array | [-1.0, 1.0] | Native browser format |
+| **Transport** | PCM16 (Base64) | [-32768, 32767] | OpenAI API requirement |
+| **Web Audio Output** | Float32Array | [-1.0, 1.0] | For AudioBuffer playback |
 
-### Tuning the Threshold
+### Key Pipeline Decisions
 
-```javascript
-const RMS_THRESHOLD = 0.01  // Adjust based on environment
+**Sample Rate: 24kHz**
+- Balances voice quality with latency
+- Nyquist frequency (12kHz) covers human speech range
+- Lower than music quality but optimized for real-time
 
-// Too low (0.001): False positives from background noise
-// Too high (0.1): Requires shouting to interrupt
-// Optimal (0.01-0.03): Natural speech detection
-```
+**Buffer Size: 4096 samples**
+- ~170ms latency at 24kHz
+- Power of 2 (Web Audio requirement)
+- Balance between latency and CPU overhead
 
----
-
-## Tools Integration
-
-### Tool Definition Pattern
-
-```python
-from agents import function_tool
-
-@function_tool
-def my_tool(param: str, count: int = 5) -> str:
-    """Tool description visible to agent.
-
-    Args:
-        param: Parameter description
-        count: Optional parameter with default
-
-    Returns:
-        Description of return value
-    """
-    # Implementation
-    return f"Result: {param} x {count}"
-```
-
-### Key Points
-
-1. **Use `@function_tool` decorator** - Don't manually define JSON schemas
-2. **Docstring is the description** - Agent sees this
-3. **Type hints define parameters** - SDK extracts automatically
-4. **Return strings for voice** - Not JSON objects
-5. **Handle errors gracefully** - Return error messages as strings
-
-### Tools List
-
-```python
-# agent.py
-from tools import tool1, tool2, tool3
-
-TOOLS = [tool1, tool2, tool3]  # Simple list
-
-# SDK automatically:
-# - Generates JSON schemas
-# - Handles tool calling
-# - Manages conversation flow
-```
-
-### Tool Execution
-
-The SDK handles tool execution automatically:
-1. Agent decides to use tool
-2. SDK sends `tool_start` event
-3. Backend receives function call
-4. Tool executes
-5. Result returned to conversation
-6. Agent continues with result
-
-**No manual tool call handling needed!**
+**Mono Channel**
+- Sufficient for voice interaction
+- Reduces bandwidth by 50% vs stereo
+- Simplifies format conversion
 
 ---
 
 ## Production Considerations
 
-### Security
+### Security Requirements
 
-1. **API Keys**
-   - Always server-side
-   - Never expose in frontend
-   - Use environment variables
-   - Rotate regularly
+| Area | Requirement | Rationale |
+|------|-------------|-----------|
+| **API Keys** | Server-side only, environment variables | Prevent client exposure, enable key rotation |
+| **WebSocket** | WSS (TLS) in production | Encrypt audio data in transit |
+| **Authentication** | Session validation, origin check | Prevent unauthorized access |
+| **Tool Execution** | Input sanitization, timeout limits | Prevent injection attacks, resource exhaustion |
+| **Rate Limiting** | Per-session and per-IP limits | Prevent abuse, control costs |
 
-2. **Tool Validation**
-   - Sanitize inputs
-   - Limit execution scope
-   - Timeout long-running tools
-   - Rate limit tool calls
+### Performance Targets
 
-3. **WebSocket Security**
-   - Use WSS (not WS) in production
-   - Implement authentication
-   - Validate origin
-   - Rate limit connections
+| Metric | Target | Why |
+|--------|--------|-----|
+| **Audio Latency** | < 200ms end-to-end | Maintain conversational feel |
+| **Buffer Processing** | 170ms (4096 samples @ 24kHz) | Balance latency vs CPU |
+| **WebSocket Throughput** | ~40 KB/s bidirectional | Support real-time audio streaming |
+| **Memory per Session** | < 50MB | Support concurrent users |
 
-### Performance
+### Monitoring & Observability
 
-1. **Audio Buffering**
-   - Use appropriate buffer sizes (4096 recommended)
-   - Don't buffer too much (increases latency)
-   - Don't buffer too little (causes stuttering)
+**Critical Metrics to Track**:
+- Session connection/disconnection events
+- Audio pipeline latency (input → output)
+- Tool execution time and failures
+- WebSocket message queue depth
+- Interruption frequency and success rate
 
-2. **WebSocket**
-   - Monitor message queue depth
-   - Implement backpressure
-   - Handle disconnections gracefully
-   - Reconnect automatically
+**Error Patterns to Alert On**:
+- High disconnection rate
+- Audio buffer underruns/overruns
+- Tool execution timeouts
+- Transcript processing failures
 
-3. **Memory Management**
-   - Clear audio queues on disconnect
-   - Stop audio contexts properly
-   - Release media streams
-   - Prevent memory leaks
+### Deployment Architecture
 
-### Monitoring
-
-```python
-# Log key metrics
-logger.info(f"Session started: {session_id}")
-logger.info(f"Tool called: {tool_name} in {duration}ms")
-logger.info(f"Audio processed: {bytes_sent} bytes")
-logger.error(f"Error: {error_type} - {error_message}")
-```
-
-### Error Handling
-
-```python
-try:
-    async with await runner.run(model_config=config) as session:
-        async for event in session:
-            # Process events
-            pass
-except websockets.ConnectionClosed:
-    logger.info("Connection closed normally")
-except Exception as e:
-    logger.error(f"Unexpected error: {e}")
-    # Notify client
-    # Cleanup resources
-finally:
-    # Always cleanup
-    await cleanup_session()
-```
+**Recommended Setup**:
+- **Backend**: Containerized FastAPI (Docker/K8s)
+- **Frontend**: Static hosting (Vercel, Netlify, Cloudflare Pages)
+- **WebSocket**: Load balancer with sticky sessions
+- **Logging**: Structured JSON logs for session tracking
+- **Secrets**: Vault/KMS for API key management
 
 ---
 
-## Key Learnings
+## Summary: Key Architectural Decisions
 
-### 1. OpenAI Agents SDK Patterns
+### What Worked Well
 
-- **Use `@function_tool`** - Not manual JSON schemas
-- **API key in `model_config`** - Not runner constructor
-- **Event structures are nested** - `event.audio.data`, not `event.audio` directly
-- **Tools execute automatically** - No manual call handling
+1. **Web Audio API scheduled playback** - Eliminated stuttering completely
+2. **Sustained speech detection** - Filtered noise while enabling natural interruptions
+3. **FastAPI async architecture** - Clean WebSocket relay implementation
+4. **@function_tool decorator** - Simplified tool integration
+5. **Direct Web Audio API usage** - Full control without library overhead
 
-### 2. Audio Processing
+### What Required Careful Tuning
 
-- **Buffer size must be power of 2** - Critical for Web Audio API (4096 recommended)
-- **PCM16 is the format** - Convert Float32 ↔ PCM16 ↔ Base64
-- **24kHz sample rate** - Standard for OpenAI Realtime API
-- **Scheduled playback** - Use `source.start(time)` for gap-free audio
-- **No await between chunks** - Schedule all immediately for smooth playback
-- **Track active sources** - Array of sources for proper interruption
-- **Monitor audio pipeline** - Debug at each conversion step
+1. **RMS threshold** - Environment-dependent, needs configuration
+2. **Buffer size** - Balance between latency and stability
+3. **Consecutive frame count** - Trade-off between responsiveness and false positives
 
-### 3. WebSocket Communication
+### Critical Implementation Details
 
-- **Bidirectional events** - Frontend ↔ Backend ↔ OpenAI
-- **Transform event formats** - SDK events ≠ Frontend events
-- **Handle disconnections** - Cleanup properly
-- **Check readyState** - Before sending messages
+1. **API key must be in `model_config`**, not runner constructor
+2. **Audio data is in `event.audio.data`**, not `event.audio`
+3. **Transcripts wrapped in `raw_model_event`**, need extraction
+4. **Agent transcripts need completion signal**, not just deltas
+5. **Buffer size must be power of 2**, critical for Web Audio API
 
-### 4. Interruption Handling
+### Future Considerations
 
-- **Sustained speech detection** - Require 3 consecutive frames (~500ms) to filter noise
-- **Adjustable threshold** - RMS 0.015 balances sensitivity vs false positives
-- **Stop immediately** - Local playback first (stop all active sources)
-- **Notify backend** - `response.cancel` message
-- **Backend interrupts** - `session.interrupt()`
-- **Cleanup everywhere** - Clear queues, stop sources, reset scheduled time
-- **Natural feel** - Brief noises don't interrupt, but real speech does
-
-### 5. Transcription Handling
-
-- **Handle raw_model_event** - Transcript events are wrapped in `raw_model_event`
-- **Extract model events** - Access `event.data` to get `transcript_delta` or `input_audio_transcription_completed`
-- **Stream agent transcripts** - Send `response.audio_transcript.delta` for each chunk
-- **Complete agent transcripts** - Send `response.audio_transcript.done` when audio ends
-- **User transcripts** - Convert `input_audio_transcription_completed` to frontend format
-- **Both required** - Frontend needs both streaming deltas AND completion signal
-
-### 6. User Experience
-
-- **Latency matters** - Optimize audio pipeline
-- **Visual feedback** - Show connection status, listening state
-- **Transcript display** - Let users see conversation in real-time
-- **Error messages** - Clear, actionable feedback
-- **Interruption feels natural** - Critical for voice UX
+- **ScriptProcessor deprecation**: Migrate to AudioWorklet for better performance
+- **VAD improvements**: Consider ML-based voice activity detection
+- **Multi-modal**: Extend to support vision/screen sharing
+- **Multi-agent**: Support agent handoffs and collaboration
 
 ---
 
-## Testing Checklist
+## References
 
-### Audio Pipeline
-- [ ] Microphone permission requested
-- [ ] Audio capture starts successfully
-- [ ] Audio data sent through WebSocket
-- [ ] Audio received from backend
-- [ ] Audio playback works
-- [ ] Volume levels appropriate
-
-### Interruption
-- [ ] User can interrupt agent
-- [ ] Playback stops immediately
-- [ ] Agent stops generating
-- [ ] Conversation continues smoothly
-- [ ] No audio artifacts
-
-### Transcription
-- [ ] User speech appears in transcript
-- [ ] Agent speech appears in transcript
-- [ ] Transcripts stream in real-time
-- [ ] Agent transcripts complete (no endless "...")
-- [ ] Transcript auto-scrolls to latest
-- [ ] Transcripts cleared on new connection
-
-### Tools
-- [ ] Tools called correctly
-- [ ] Parameters extracted properly
-- [ ] Results returned to agent
-- [ ] Agent uses results in response
-- [ ] Error handling works
-
-### Connection
-- [ ] WebSocket connects successfully
-- [ ] Reconnects on disconnect
-- [ ] Handles network errors
-- [ ] Cleans up on close
-- [ ] Multiple sessions work
-
-### UI/UX
-- [ ] Status indicators accurate
-- [ ] Transcript updates in real-time
-- [ ] Mute button works
-- [ ] Connect/disconnect works
-- [ ] Visual feedback clear
+- **OpenAI Agents SDK**: [https://openai.github.io/openai-agents-python/](https://openai.github.io/openai-agents-python/)
+- **OpenAI Realtime API**: [https://platform.openai.com/docs/guides/realtime](https://platform.openai.com/docs/guides/realtime)
+- **Web Audio API**: [https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API)
+- **FastAPI Documentation**: [https://fastapi.tiangolo.com/](https://fastapi.tiangolo.com/)
 
 ---
 
-## Quick Start Template
-
-### Backend Minimal Setup
-
-```python
-# main.py
-from fastapi import FastAPI, WebSocket
-from agents.realtime import RealtimeAgent, RealtimeRunner
-
-app = FastAPI()
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-
-    agent = RealtimeAgent(
-        name="Assistant",
-        instructions="You are helpful.",
-        tools=[]
-    )
-
-    runner = RealtimeRunner(starting_agent=agent)
-
-    model_config = {
-        "api_key": "your-key",
-        "model": "gpt-realtime-mini",
-        "voice": "alloy",
-        "modalities": ["text", "audio"],
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm16"
-    }
-
-    async with await runner.run(model_config=model_config) as session:
-        # Implement bidirectional relay here
-        pass
-```
-
-### Frontend Minimal Setup
-
-```javascript
-// useRealtimeAgent.js
-const SAMPLE_RATE = 24000
-const BUFFER_SIZE = 4096  // Power of 2!
-
-const ws = new WebSocket('ws://localhost:8000/ws')
-
-const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, sampleRate: SAMPLE_RATE }
-})
-
-const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE })
-const source = audioContext.createMediaStreamSource(stream)
-const processor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1)
-
-processor.onaudioprocess = (e) => {
-    const float32 = e.inputBuffer.getChannelData(0)
-    const pcm16 = floatTo16BitPCM(float32)
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)))
-
-    ws.send(JSON.stringify({
-        type: 'input_audio_buffer.append',
-        audio: base64
-    }))
-}
-
-source.connect(processor)
-processor.connect(audioContext.destination)
-```
-
----
-
-## Conclusion
-
-Building a real-time voice agent requires careful attention to:
-
-1. **Correct SDK usage** - Follow OpenAI Agents SDK patterns
-2. **Audio pipeline** - Handle formats and conversions correctly
-3. **WebSocket relay** - Transform events between SDK and frontend
-4. **Interruption handling** - Enable natural conversations
-5. **Error handling** - Graceful degradation and recovery
-
-The key is understanding the complete flow from microphone to speaker, and handling each transformation step correctly. With the patterns in this document, you can build production-ready voice agents that feel natural and responsive.
-
----
-
-## Resources
-
-- [OpenAI Agents SDK Documentation](https://openai.github.io/openai-agents-python/)
-- [OpenAI Realtime API Guide](https://platform.openai.com/docs/guides/realtime)
-- [Web Audio API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API)
-- [FastAPI WebSockets](https://fastapi.tiangolo.com/advanced/websockets/)
-- [React Hooks](https://react.dev/reference/react)
-
----
-
-## License
-
-This document is part of the Real-time Voice Agent PoC project.
-
-**Disclaimer:** This is educational information for building voice agents. Always ensure proper security, privacy, and compliance when building production applications.
+**Document Purpose**: This document captures architectural decisions and technical rationale. For implementation guides and code examples, see project README and inline code documentation.
